@@ -1,0 +1,626 @@
+{% extends "base.html" %}
+
+{% set active_page = "inference" %}
+
+{% block title %}Suy luận - Traffic SegNet Dashboard{% endblock %}
+
+{% block content %}
+<div class="space-y-10 pb-20">
+    <header class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+        <div class="space-y-2">
+            <p class="text-xs font-mono uppercase tracking-widest text-blue-400">Operational demo</p>
+            <h2 class="text-3xl font-bold text-white">Demo Thực Tế</h2>
+            <p class="max-w-3xl text-slate-400">Upload ảnh/video, chọn tác vụ inference hoặc nhận diện vượt đèn đỏ. Backend gọi model thật, vẽ kết quả và trả lại media đã xử lý.</p>
+        </div>
+        <div class="grid grid-cols-2 gap-3 text-sm">
+            <div class="rounded-xl border border-slate-800 bg-slate-950 px-4 py-3">
+                <p class="text-xs uppercase tracking-wider text-slate-500">YOLOv26s-seg</p>
+                <p class="mt-1 font-semibold {% if status.yolo.available %}text-emerald-400{% else %}text-red-400{% endif %}">{% if status.yolo.available %}Ready{% else %}Missing{% endif %}</p>
+            </div>
+            <div class="rounded-xl border border-slate-800 bg-slate-950 px-4 py-3">
+                <p class="text-xs uppercase tracking-wider text-slate-500">RF-DETR</p>
+                <p class="mt-1 font-semibold {% if status.rfdetr.available %}text-emerald-400{% else %}text-amber-400{% endif %}">{% if status.rfdetr.available %}Ready{% else %}Setup{% endif %}</p>
+            </div>
+        </div>
+    </header>
+
+    <section id="status-alert" class="rounded-xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-300">
+        <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <span><strong>YOLOv26s-seg:</strong> {% if status.yolo.available %}sẵn sàng{% else %}chưa sẵn sàng{% endif %}</span>
+            <span><strong>RF-DETR:</strong> {% if status.rfdetr.available %}sẵn sàng chạy checkpoint thật{% else %}cần cài thư viện rfdetr để dùng checkpoint thật{% endif %}</span>
+        </div>
+    </section>
+
+    <form id="inference-form" class="grid grid-cols-1 gap-8 lg:grid-cols-12">
+        <section class="lg:col-span-4 space-y-6">
+            <div class="card">
+                <h3 class="mb-4 text-lg font-semibold text-white">Nguồn dữ liệu</h3>
+                <label id="drop-zone" for="file-upload" class="block cursor-pointer rounded-xl border-2 border-dashed border-slate-700 p-8 text-center transition-colors hover:border-blue-500/70">
+                    <i class="fas fa-cloud-upload-alt text-4xl text-slate-500"></i>
+                    <p class="mt-4 text-lg font-medium text-white">Chọn hoặc kéo thả ảnh/video</p>
+                    <p id="file-name" class="mt-2 text-sm text-slate-500">JPG, PNG, WebP hoặc MP4 tối đa 80MB</p>
+                    <input id="file-upload" name="file" type="file" class="hidden" accept="image/*,video/*">
+                </label>
+
+                <button type="button" id="use-sample" class="mt-4 w-full rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-3 font-semibold text-blue-200 transition-colors hover:bg-blue-500/20">
+                    <i class="fas fa-image mr-2"></i>Dùng ảnh sample
+                </button>
+            </div>
+
+            <div class="card">
+                <h3 class="mb-4 text-lg font-semibold text-white">Model inference</h3>
+                <div class="space-y-3">
+                    <label id="model-yolo-card" class="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-800 p-4 transition-colors hover:bg-slate-900">
+                        <input type="radio" name="model" value="yolo" class="text-blue-500" checked>
+                        <div class="flex-1">
+                            <div class="font-medium text-white">YOLOv26s-seg</div>
+                            <div class="text-sm text-slate-500">Nhanh, phù hợp real-time</div>
+                        </div>
+                        <span class="text-xs font-mono {% if status.yolo.available %}text-emerald-400{% else %}text-red-400{% endif %}">
+                            {% if status.yolo.available %}READY{% else %}OFF{% endif %}
+                        </span>
+                    </label>
+
+                    <label id="model-rfdetr-card" class="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-800 p-4 transition-colors hover:bg-slate-900">
+                        <input type="radio" name="model" value="rfdetr" class="text-purple-500">
+                        <div class="flex-1">
+                            <div class="font-medium text-white">RF-DETR Small</div>
+                            <div class="text-sm text-slate-500">{% if status.rfdetr.available %}Checkpoint RF-DETR thật{% else %}Cần cài rfdetr{% endif %}</div>
+                        </div>
+                        <span class="text-xs font-mono {% if status.rfdetr.available %}text-emerald-400{% else %}text-amber-400{% endif %}">
+                            {% if status.rfdetr.available %}READY{% else %}SETUP{% endif %}
+                        </span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3 class="mb-4 text-lg font-semibold text-white">Tác vụ</h3>
+                <div class="space-y-3">
+                    <label class="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-800 p-4 transition-colors hover:bg-slate-900">
+                        <input type="radio" name="task" value="image" class="text-blue-500" checked>
+                        <div>
+                            <div class="font-medium text-white">Ảnh detection/segmentation</div>
+                            <div class="text-sm text-slate-500">Ảnh đầu vào, xuất ảnh đã vẽ mask/box.</div>
+                        </div>
+                    </label>
+                    <label class="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-800 p-4 transition-colors hover:bg-slate-900">
+                        <input type="radio" name="task" value="video" class="text-blue-500">
+                        <div>
+                            <div class="font-medium text-white">Video detection</div>
+                            <div class="text-sm text-slate-500">Xử lý từng frame bằng YOLOv26s-seg.</div>
+                        </div>
+                    </label>
+                    <label class="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-800 p-4 transition-colors hover:bg-slate-900">
+                        <input type="radio" name="task" value="redlight" class="text-red-500">
+                        <div>
+                            <div class="font-medium text-white">Vượt đèn đỏ</div>
+                            <div class="text-sm text-slate-500">Video + tracking + stop-line crossing.</div>
+                        </div>
+                    </label>
+                </div>
+                <p id="task-hint" class="mt-4 hidden rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-200"></p>
+            </div>
+
+            <div class="card">
+                <h3 class="mb-4 text-lg font-semibold text-white">Cấu hình</h3>
+                <div class="space-y-5">
+                    <div>
+                        <div class="mb-2 flex justify-between text-sm">
+                            <label class="font-medium text-slate-300">Confidence Threshold</label>
+                            <span id="conf-value" class="font-mono text-blue-300">0.50</span>
+                        </div>
+                        <input id="confidence" name="confidence" type="range" min="0.05" max="0.95" step="0.05" value="0.50" class="w-full">
+                    </div>
+                    <div>
+                        <div class="mb-2 flex justify-between text-sm">
+                            <label class="font-medium text-slate-300">IoU Threshold</label>
+                            <span id="iou-value" class="font-mono text-blue-300">0.50</span>
+                        </div>
+                        <input id="iou" name="iou" type="range" min="0.05" max="0.95" step="0.05" value="0.50" class="w-full">
+                    </div>
+                </div>
+
+                <button type="submit" id="run-button" class="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-4 font-bold text-white transition-colors hover:bg-blue-500">
+                    <i class="fas fa-play"></i> Chạy phân tích
+                </button>
+            </div>
+        </section>
+
+        <section class="lg:col-span-8 space-y-6">
+            <div id="processing-status" class="card hidden">
+                <div class="flex items-center gap-4">
+                    <div class="h-9 w-9 animate-spin rounded-full border-2 border-blue-500 border-t-transparent"></div>
+                    <div>
+                        <h4 class="text-lg font-semibold text-white">Đang xử lý...</h4>
+                        <p class="text-slate-400">Model đang load checkpoint và chạy inference.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div id="error-box" class="hidden rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200"></div>
+
+            <details id="debug-panel" class="hidden rounded-xl border border-amber-500/25 bg-amber-500/10 p-4 text-sm text-amber-50" open>
+                <summary class="cursor-pointer select-none font-semibold text-amber-100">
+                    Debug chi tiết
+                    <span id="debug-summary" class="ml-2 font-mono text-xs font-normal text-amber-200/80"></span>
+                </summary>
+                <pre id="debug-output" class="mt-4 max-h-96 overflow-auto rounded-lg border border-amber-500/20 bg-slate-950/90 p-4 text-xs leading-relaxed text-slate-200"></pre>
+            </details>
+
+            <div id="empty-state" class="rounded-2xl border border-slate-800 bg-slate-950 p-10 text-center">
+                <div class="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-slate-800 bg-slate-900 text-slate-400">
+                    <i class="fas fa-video"></i>
+                </div>
+                <h3 class="mt-5 text-xl font-semibold text-white">Sẵn sàng nhận ảnh hoặc video</h3>
+                <p class="mx-auto mt-2 max-w-xl text-sm text-slate-500">Kết quả sẽ hiển thị song song nguồn gốc và media đã xử lý, kèm số đối tượng, số vi phạm, thời gian xử lý và danh sách detection.</p>
+            </div>
+
+            <div id="results-section" class="card hidden">
+                <div class="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                        <h3 class="text-lg font-semibold text-slate-200">Kết quả phân tích</h3>
+                        <p id="result-model" class="mt-1 text-sm text-slate-500"></p>
+                    </div>
+                    <a id="download-link" href="#" target="_blank" class="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-800 px-4 py-2 text-white transition-colors hover:bg-slate-700">
+                        <i class="fas fa-download"></i>Tải kết quả
+                    </a>
+                </div>
+
+                <div id="media-grid" class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                    <div id="original-media-panel">
+                        <h4 class="mb-3 text-sm font-medium text-slate-300">Ảnh gốc</h4>
+                        <div id="original-media-box" class="aspect-video overflow-hidden rounded-xl bg-slate-800">
+                            <img id="original-image" src="" alt="Original" class="h-full w-full object-cover">
+                            <video id="original-video" class="hidden h-full w-full object-cover" controls></video>
+                        </div>
+                    </div>
+                    <div id="result-media-panel">
+                        <h4 id="result-media-title" class="mb-3 text-sm font-medium text-slate-300">Ảnh kết quả</h4>
+                        <div id="result-media-box" class="aspect-video overflow-hidden rounded-xl bg-slate-800">
+                            <img id="segmented-image" src="" alt="Segmented" class="h-full w-full object-cover">
+                            <video id="segmented-video" class="hidden h-full w-full object-cover" controls></video>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+                    <div class="rounded-xl border border-slate-800 bg-slate-950 p-4 text-center">
+                        <div class="text-2xl font-bold text-blue-400" id="total-objects">0</div>
+                        <div class="text-xs text-slate-500">Tổng đối tượng</div>
+                    </div>
+                    <div class="rounded-xl border border-slate-800 bg-slate-950 p-4 text-center">
+                        <div class="text-2xl font-bold text-rose-400" id="violations">0</div>
+                        <div class="text-xs text-slate-500">Vi phạm</div>
+                    </div>
+                    <div class="rounded-xl border border-slate-800 bg-slate-950 p-4 text-center">
+                        <div class="text-2xl font-bold text-emerald-400" id="processing-time">0ms</div>
+                        <div class="text-xs text-slate-500">Thời gian</div>
+                    </div>
+                    <div class="rounded-xl border border-slate-800 bg-slate-950 p-4 text-center">
+                        <div class="text-2xl font-bold text-purple-400" id="avg-confidence">0%</div>
+                        <div class="text-xs text-slate-500">Confidence TB</div>
+                    </div>
+                </div>
+
+                <div class="mt-6">
+                    <h4 class="mb-3 text-sm font-medium text-slate-300">Đối tượng phát hiện</h4>
+                    <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3" id="detections-list"></div>
+                </div>
+
+                <div id="violation-history-section" class="mt-6 hidden">
+                    <h4 class="mb-3 text-sm font-medium text-slate-300">Lịch sử vi phạm</h4>
+                    <div class="grid grid-cols-1 gap-4 md:grid-cols-2" id="violation-history-list"></div>
+                </div>
+            </div>
+        </section>
+    </form>
+</div>
+
+<script>
+    const form = document.getElementById('inference-form');
+    const fileInput = document.getElementById('file-upload');
+    const fileName = document.getElementById('file-name');
+    const useSampleButton = document.getElementById('use-sample');
+    const confidenceInput = document.getElementById('confidence');
+    const iouInput = document.getElementById('iou');
+    const confValue = document.getElementById('conf-value');
+    const iouValue = document.getElementById('iou-value');
+    const processingStatus = document.getElementById('processing-status');
+    const resultsSection = document.getElementById('results-section');
+    const emptyState = document.getElementById('empty-state');
+    const errorBox = document.getElementById('error-box');
+    const runButton = document.getElementById('run-button');
+    const dropZone = document.getElementById('drop-zone');
+    const taskHint = document.getElementById('task-hint');
+    const debugPanel = document.getElementById('debug-panel');
+    const debugSummary = document.getElementById('debug-summary');
+    const debugOutput = document.getElementById('debug-output');
+
+    let useSample = false;
+    let latestDebugData = null;
+
+    confidenceInput.addEventListener('input', () => confValue.textContent = Number(confidenceInput.value).toFixed(2));
+    iouInput.addEventListener('input', () => iouValue.textContent = Number(iouInput.value).toFixed(2));
+
+    fileInput.addEventListener('change', () => {
+        useSample = false;
+        fileName.textContent = fileInput.files[0] ? fileInput.files[0].name : 'JPG, PNG, WebP hoặc MP4 tối đa 80MB';
+    });
+
+    useSampleButton.addEventListener('click', () => {
+        useSample = true;
+        fileInput.value = '';
+        fileName.textContent = 'Đang dùng ảnh sample: static/test_images/test_image.jpg';
+        document.querySelector('input[name="task"][value="image"]').checked = true;
+        updateTaskMode();
+    });
+
+    dropZone.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        dropZone.classList.add('border-blue-500');
+    });
+
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('border-blue-500'));
+    dropZone.addEventListener('drop', (event) => {
+        event.preventDefault();
+        dropZone.classList.remove('border-blue-500');
+        if (event.dataTransfer.files.length > 0) {
+            fileInput.files = event.dataTransfer.files;
+            useSample = false;
+            fileName.textContent = event.dataTransfer.files[0].name;
+        }
+    });
+
+    function setBusy(isBusy) {
+        processingStatus.classList.toggle('hidden', !isBusy);
+        runButton.disabled = isBusy;
+        runButton.classList.toggle('opacity-60', isBusy);
+    }
+
+    function showError(message) {
+        errorBox.textContent = message;
+        errorBox.classList.remove('hidden');
+    }
+
+    function fileDebug(file) {
+        if (!file) {
+            return null;
+        }
+        return {
+            name: file.name,
+            type: file.type || 'unknown',
+            size_bytes: file.size,
+            size_mb: Number((file.size / (1024 * 1024)).toFixed(3)),
+            last_modified: new Date(file.lastModified).toISOString(),
+        };
+    }
+
+    function buildClientDebug(rawForm) {
+        return {
+            phase: 'client-ready',
+            client: {
+                page: window.location.pathname,
+                timestamp: new Date().toISOString(),
+                user_agent: navigator.userAgent,
+            },
+            request: {
+                endpoint: '{{ url_for("api_infer") }}',
+                method: 'POST',
+                model: rawForm.get('model'),
+                task: rawForm.get('task'),
+                confidence: Number(confidenceInput.value),
+                iou: Number(iouInput.value),
+                use_sample: useSample,
+                file: useSample ? null : fileDebug(fileInput.files[0]),
+            },
+        };
+    }
+
+    function setDebugPanel(data) {
+        latestDebugData = data;
+        if (!data) {
+            debugPanel.classList.add('hidden');
+            debugSummary.textContent = '';
+            debugOutput.textContent = '';
+            return;
+        }
+
+        const backendRequest = data.payload?.debug?.request;
+        const parts = [
+            data.phase,
+            data.response ? `HTTP ${data.response.http_status}` : null,
+            data.response?.elapsed_ms !== undefined ? `${data.response.elapsed_ms}ms` : null,
+            backendRequest?.request_id ? `id ${backendRequest.request_id}` : null,
+        ].filter(Boolean);
+
+        debugSummary.textContent = parts.join(' · ');
+        debugOutput.textContent = JSON.stringify(data, null, 2);
+        debugPanel.classList.remove('hidden');
+    }
+
+    function updateTaskMode() {
+        const selectedTask = new FormData(form).get('task');
+        const yoloRadio = document.querySelector('input[name="model"][value="yolo"]');
+        const rfdetrRadio = document.querySelector('input[name="model"][value="rfdetr"]');
+        const requiresYolo = selectedTask === 'video' || selectedTask === 'redlight';
+
+        if (requiresYolo) {
+            yoloRadio.checked = true;
+            rfdetrRadio.disabled = true;
+            taskHint.textContent = selectedTask === 'redlight'
+                ? 'Tác vụ vượt đèn đỏ dùng YOLOv26s-seg để detect, track phương tiện và kiểm tra cắt qua vạch dừng.'
+                : 'Video detection hiện dùng YOLOv26s-seg để đảm bảo tốc độ xử lý từng frame.';
+            taskHint.classList.remove('hidden');
+        } else {
+            rfdetrRadio.disabled = false;
+            taskHint.classList.add('hidden');
+        }
+    }
+
+    document.querySelectorAll('input[name="task"]').forEach((radio) => {
+        radio.addEventListener('change', updateTaskMode);
+    });
+    updateTaskMode();
+
+    function displayDetections(detections) {
+        const container = document.getElementById('detections-list');
+        container.innerHTML = '';
+        if (!detections || detections.length === 0) {
+            container.innerHTML = '<p class="text-sm text-slate-500">Không có đối tượng vượt ngưỡng confidence.</p>';
+            return;
+        }
+        detections.forEach((detection) => {
+            const item = document.createElement('div');
+            item.className = `rounded-xl border p-4 ${detection.violation ? 'border-rose-500/30 bg-rose-500/10' : 'border-slate-800 bg-slate-950'}`;
+            item.innerHTML = `
+                <div class="flex items-center justify-between gap-3">
+                    <div class="font-medium text-white">${detection.class}</div>
+                    <div class="font-mono text-xs ${detection.violation ? 'text-rose-300' : 'text-blue-300'}">${(detection.confidence * 100).toFixed(1)}%</div>
+                </div>
+                <p class="mt-2 text-xs text-slate-500">bbox: [${(detection.bbox || []).join(', ')}]</p>
+            `;
+            container.appendChild(item);
+        });
+    }
+
+    function displayViolationHistory(events) {
+        const section = document.getElementById('violation-history-section');
+        const container = document.getElementById('violation-history-list');
+        container.innerHTML = '';
+        if (!events || events.length === 0) {
+            section.classList.add('hidden');
+            return;
+        }
+        section.classList.remove('hidden');
+        events.forEach((event, index) => {
+            const item = document.createElement('article');
+            item.className = 'overflow-hidden rounded-xl border border-rose-500/30 bg-rose-500/10';
+            item.innerHTML = `
+                <img src="${event.image_url}?t=${Date.now()}" alt="Ảnh xe vượt đèn đỏ" class="h-44 w-full object-cover">
+                <div class="p-4">
+                    <div class="flex items-center justify-between gap-3">
+                        <strong class="text-white">Vi phạm #${index + 1}</strong>
+                        <span class="font-mono text-xs text-rose-200">${Number(event.timestamp || 0).toFixed(2)}s</span>
+                    </div>
+                    <p class="mt-2 text-sm text-slate-300">${event.class} · track #${event.track_id}</p>
+                    <p class="mt-1 text-xs text-slate-500">Frame ${event.frame} · confidence ${(event.confidence * 100).toFixed(1)}%</p>
+                </div>
+            `;
+            container.appendChild(item);
+        });
+    }
+
+    function stopCurrentMedia() {
+        const originalVideo = document.getElementById('original-video');
+        const segmentedVideo = document.getElementById('segmented-video');
+        const segmentedImage = document.getElementById('segmented-image');
+        originalVideo.pause();
+        segmentedVideo.pause();
+        originalVideo.removeAttribute('src');
+        segmentedVideo.removeAttribute('src');
+        segmentedImage.removeAttribute('src');
+        originalVideo.load();
+        segmentedVideo.load();
+    }
+
+    function resetMediaLayout() {
+        const mediaGrid = document.getElementById('media-grid');
+        const originalPanel = document.getElementById('original-media-panel');
+        const resultPanel = document.getElementById('result-media-panel');
+        const originalBox = document.getElementById('original-media-box');
+        const resultBox = document.getElementById('result-media-box');
+        const segmentedImage = document.getElementById('segmented-image');
+        const segmentedVideo = document.getElementById('segmented-video');
+
+        mediaGrid.className = 'grid grid-cols-1 gap-6 lg:grid-cols-2';
+        originalPanel.classList.remove('hidden');
+        resultPanel.className = '';
+        originalBox.className = 'aspect-video overflow-hidden rounded-xl bg-slate-800';
+        resultBox.className = 'aspect-video overflow-hidden rounded-xl bg-slate-800';
+        resultBox.style.minHeight = '';
+        segmentedImage.className = 'h-full w-full object-cover';
+        segmentedVideo.className = 'hidden h-full w-full object-cover';
+        document.getElementById('result-media-title').textContent = 'Ảnh kết quả';
+    }
+
+    function renderResult(payload) {
+        resetMediaLayout();
+        resultsSection.classList.remove('hidden');
+        emptyState.classList.add('hidden');
+        const originalImage = document.getElementById('original-image');
+        const segmentedImage = document.getElementById('segmented-image');
+        const originalVideo = document.getElementById('original-video');
+        const segmentedVideo = document.getElementById('segmented-video');
+        const isVideo = payload.media_type === 'video' || /\.(mp4|avi|mov|mkv)$/i.test(payload.result_url);
+
+        originalImage.classList.toggle('hidden', isVideo);
+        segmentedImage.classList.toggle('hidden', isVideo);
+        originalVideo.classList.toggle('hidden', !isVideo);
+        segmentedVideo.classList.toggle('hidden', !isVideo);
+
+        if (isVideo) {
+            originalVideo.src = payload.original_url;
+            segmentedVideo.src = payload.result_url + `?t=${Date.now()}`;
+            originalVideo.load();
+            segmentedVideo.load();
+        } else {
+            originalImage.src = payload.original_url;
+            segmentedImage.src = payload.result_url + `?t=${Date.now()}`;
+        }
+        document.getElementById('result-model').textContent = `${payload.model} · ${payload.detections.length} detections`;
+        document.getElementById('download-link').href = payload.result_url;
+        document.getElementById('download-link').innerHTML = '<i class="fas fa-download"></i>Tải kết quả';
+        document.getElementById('total-objects').textContent = payload.metrics.total_objects;
+        document.getElementById('violations').textContent = payload.metrics.violations;
+        document.getElementById('processing-time').textContent = payload.metrics.processing_time;
+        document.getElementById('avg-confidence').textContent = `${payload.metrics.avg_confidence}%`;
+        displayDetections(payload.detections);
+        displayViolationHistory(payload.violation_events);
+    }
+
+    function renderLiveRedlight(payload) {
+        resultsSection.classList.remove('hidden');
+        emptyState.classList.add('hidden');
+        const mediaGrid = document.getElementById('media-grid');
+        const originalPanel = document.getElementById('original-media-panel');
+        const resultBox = document.getElementById('result-media-box');
+        const originalImage = document.getElementById('original-image');
+        const segmentedImage = document.getElementById('segmented-image');
+        const originalVideo = document.getElementById('original-video');
+        const segmentedVideo = document.getElementById('segmented-video');
+
+        mediaGrid.className = 'grid grid-cols-1 gap-6';
+        originalPanel.classList.add('hidden');
+        resultBox.className = 'aspect-video overflow-hidden rounded-xl border border-rose-500/30 bg-black';
+        resultBox.style.minHeight = 'min(72vh, 760px)';
+        document.getElementById('result-media-title').textContent = 'Video live detect';
+
+        originalImage.classList.add('hidden');
+        originalVideo.classList.add('hidden');
+        segmentedVideo.classList.add('hidden');
+        segmentedImage.classList.remove('hidden');
+        segmentedImage.className = 'h-full w-full bg-black object-contain';
+
+        originalVideo.pause();
+        originalVideo.removeAttribute('src');
+        originalVideo.load();
+        segmentedImage.src = payload.stream_url + `?t=${Date.now()}`;
+        document.getElementById('result-model').textContent = `${payload.model} · live stream`;
+        document.getElementById('download-link').href = payload.stream_url;
+        document.getElementById('download-link').innerHTML = '<i class="fas fa-satellite-dish"></i>Live stream';
+        document.getElementById('total-objects').textContent = 'Live';
+        document.getElementById('violations').textContent = 'Live';
+        document.getElementById('processing-time').textContent = 'Streaming';
+        document.getElementById('avg-confidence').textContent = '-';
+        document.getElementById('detections-list').innerHTML = '<p class="text-sm text-slate-500">Đang nhận diện trực tiếp trên video. Thông tin đèn, track và vi phạm hiển thị ngay trong khung kết quả.</p>';
+        displayViolationHistory([]);
+    }
+
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        errorBox.classList.add('hidden');
+        stopCurrentMedia();
+        resultsSection.classList.add('hidden');
+        emptyState.classList.remove('hidden');
+
+        const rawForm = new FormData(form);
+        const clientDebug = buildClientDebug(rawForm);
+
+        if (!useSample && fileInput.files.length === 0) {
+            setDebugPanel({
+                ...clientDebug,
+                phase: 'client-validation-error',
+                client_error: { message: 'Vui lòng chọn file hoặc bấm “Dùng ảnh sample”.' },
+            });
+            showError('Vui lòng chọn file hoặc bấm “Dùng ảnh sample”.');
+            return;
+        }
+        const selectedTask = rawForm.get('task');
+        if (useSample && selectedTask !== 'image') {
+            setDebugPanel({
+                ...clientDebug,
+                phase: 'client-validation-error',
+                client_error: { message: 'Ảnh sample chỉ dùng cho tác vụ ảnh.' },
+            });
+            showError('Ảnh sample chỉ dùng cho tác vụ ảnh. Vui lòng upload video cho Video detection hoặc Vượt đèn đỏ.');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('model', rawForm.get('model'));
+        formData.append('task', rawForm.get('task'));
+        formData.append('confidence', confidenceInput.value);
+        formData.append('iou', iouInput.value);
+        if (useSample) {
+            formData.append('use_sample', '1');
+        } else {
+            formData.append('file', fileInput.files[0]);
+        }
+
+        setBusy(true);
+        setDebugPanel({ ...clientDebug, phase: 'sending' });
+        try {
+            const startedAt = performance.now();
+            const isLiveRedlight = rawForm.get('task') === 'redlight';
+            const endpoint = isLiveRedlight ? '{{ url_for("api_redlight_start") }}' : '{{ url_for("api_infer") }}';
+            const response = await fetch(`${endpoint}?t=${Date.now()}`, { method: 'POST', body: formData, cache: 'no-store' });
+            const responseText = await response.text();
+            const elapsedMs = Math.round(performance.now() - startedAt);
+            let payload = null;
+            try {
+                payload = JSON.parse(responseText);
+            } catch (parseError) {
+                setDebugPanel({
+                    ...clientDebug,
+                    phase: 'response-parse-error',
+                    response: {
+                        http_status: response.status,
+                        ok: response.ok,
+                        elapsed_ms: elapsedMs,
+                        headers: Object.fromEntries(response.headers.entries()),
+                        raw_text: responseText,
+                    },
+                    client_error: {
+                        message: parseError.message,
+                        stack: parseError.stack,
+                    },
+                });
+                throw new Error('API trả về dữ liệu không phải JSON.');
+            }
+
+            setDebugPanel({
+                ...clientDebug,
+                phase: payload.success ? 'completed' : 'server-error',
+                response: {
+                    http_status: response.status,
+                    ok: response.ok,
+                    elapsed_ms: elapsedMs,
+                    headers: Object.fromEntries(response.headers.entries()),
+                },
+                payload,
+            });
+
+            if (!payload.success) {
+                throw new Error(payload.error || 'Inference thất bại.');
+            }
+            if (isLiveRedlight) {
+                renderLiveRedlight(payload);
+            } else {
+                renderResult(payload);
+            }
+        } catch (error) {
+            setDebugPanel({
+                ...(latestDebugData || clientDebug),
+                client_error: {
+                    message: error.message || 'Không thể gọi inference API.',
+                    stack: error.stack,
+                },
+            });
+            showError(error.message || 'Không thể gọi inference API.');
+        } finally {
+            setBusy(false);
+        }
+    });
+</script>
+{% endblock %}

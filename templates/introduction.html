@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% set active_page = "introduction" %}
+
+{% block title %}Giới thiệu - Traffic SegNet Dashboard{% endblock %}
+
+{% block content %}
+<div class="space-y-10 pb-20">
+    <header class="space-y-5">
+        <div class="inline-flex items-center gap-2 rounded-full border border-red-500/20 bg-red-600/10 px-3 py-1 text-xs font-medium uppercase tracking-wide text-red-300">
+            <i class="fas fa-traffic-light text-xs"></i> Red-light Violation Detection
+        </div>
+        <div class="max-w-5xl">
+            <h2 class="section-heading text-white tracking-tight">
+                Phát hiện lỗi <span class="text-red-400">vượt đèn đỏ</span> bằng YOLOv26s-seg và RF-DETR
+            </h2>
+            <p class="max-w-4xl text-xl leading-relaxed text-slate-400">
+                Đề tài xây dựng hệ thống nhận diện phương tiện, trạng thái đèn tín hiệu và vạch dừng từ camera CCTV giao thông để phát hiện hành vi vượt đèn đỏ.
+                Website này trình bày pipeline dữ liệu, tuning YOLOv26s-seg, huấn luyện RF-DETR, kết quả định lượng, so sánh trực quan và demo thực tế.
+            </p>
+        </div>
+    </header>
+
+    <section class="grid grid-cols-1 gap-6 md:grid-cols-3">
+        <div class="card">
+            <p class="text-xs font-mono uppercase tracking-wider text-slate-500">Tên đề tài</p>
+            <h3 class="mt-3 text-2xl font-bold text-white">Nhận diện lỗi vượt đèn đỏ</h3>
+            <p class="mt-4 text-slate-400">Hệ thống tập trung vào phương tiện, đèn tín hiệu và vạch dừng; các class ngoài phạm vi phân tích sẽ được ẩn trong giao diện kết quả.</p>
+        </div>
+        <div class="card">
+            <p class="text-xs font-mono uppercase tracking-wider text-slate-500">Input</p>
+            <h3 class="mt-3 text-2xl font-bold text-white">Ảnh và video giao thông</h3>
+            <p class="mt-4 text-slate-400">Ảnh dùng để so sánh instance segmentation; video dùng cho pipeline tracking, trạng thái đèn đỏ và kiểm tra phương tiện cắt qua vạch dừng.</p>
+        </div>
+        <div class="card">
+            <p class="text-xs font-mono uppercase tracking-wider text-slate-500">Output</p>
+            <h3 class="mt-3 text-2xl font-bold text-white">Mask, box và cảnh báo</h3>
+            <p class="mt-4 text-slate-400">Kết quả gồm vùng phân đoạn, bounding box, nhãn đối tượng, confidence và số lượng trường hợp vi phạm trong video.</p>
+        </div>
+    </section>
+
+    <section class="grid grid-cols-1 gap-8 xl:grid-cols-2">
+        <div class="card">
+            <div class="mb-5 flex items-center gap-3">
+                <i class="fas fa-database text-2xl text-blue-400"></i>
+                <h3 class="text-2xl font-bold text-white">Dataset và Class</h3>
+            </div>
+            <div class="space-y-4 text-slate-400">
+                <p><strong class="text-slate-200">Nguồn dữ liệu:</strong> tự thu thập từ camera CCTV giao thông.</p>
+                <p><strong class="text-slate-200">Kích thước:</strong> 4.482 ảnh, chia theo tỉ lệ 70/20/10 cho train, validation và test.</p>
+                <p><strong class="text-slate-200">Định dạng:</strong> giữ nguyên annotation instance segmentation để dùng song song cho Ultralytics YOLO và RF-DETR.</p>
+                <p><strong class="text-slate-200">Class hiển thị:</strong> ambulance, car, fire_truck, motorcycle, police_car, person_no_helmet, person_with_helmet, các trạng thái đèn và stop_line.</p>
+                <p><strong class="text-slate-200">Tiền xử lý:</strong> tự động xoay ảnh, resize 640x640 và chuẩn hóa đầu vào theo pipeline của từng framework.</p>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="mb-5 flex items-center gap-3">
+                <i class="fas fa-sliders-h text-2xl text-emerald-400"></i>
+                <h3 class="text-2xl font-bold text-white">Augmentation và Tuning</h3>
+            </div>
+            <div class="space-y-4 text-slate-400">
+                <p><strong class="text-slate-200">Augmentation:</strong> blur, brightness, motion blur và noise để mô phỏng rung, nhòe và thay đổi sáng trên camera đường phố.</p>
+                <p><strong class="text-slate-200">YOLOv26s-seg:</strong> tuning với ảnh 640x640, batch lớn, learning rate/momentum/weight decay tối ưu và augmentation phù hợp bài toán segmentation.</p>
+                <p><strong class="text-slate-200">RF-DETR:</strong> fine-tune RF-DETR Seg Small với DINOv2 backbone, checkpoint <code>RF-DETR_Small.pt</code> và đầu ra mask/box cho từng class.</p>
+                <p><strong class="text-slate-200">Demo:</strong> Flask gọi model thật, OpenCV xử lý video, tracking phương tiện và lưu ảnh sự kiện khi xe cắt qua vạch dừng lúc đèn đỏ.</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="grid grid-cols-1 gap-8 md:grid-cols-2">
+        <div class="card group transition-colors hover:border-blue-500/30">
+            <div class="mb-6 flex items-center justify-between gap-4">
+                <i class="fas fa-bolt text-4xl text-blue-500 transition-transform group-hover:scale-110"></i>
+                <span class="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-xs font-mono text-blue-300">
+                    {{ status.yolo.path if status else "yolov26s_seg.pt" }}
+                </span>
+            </div>
+            <h3 class="text-2xl font-bold text-white">YOLOv26s-seg</h3>
+            <p class="mt-4 leading-relaxed text-slate-400">
+                YOLOv26s-seg là mô hình one-stage instance segmentation, ưu tiên tốc độ suy luận và phù hợp xử lý video CCTV. Bản tuning hiện tại tập trung
+                vào nhóm class phục vụ vượt đèn đỏ, giảm nhiễu từ các lớp lane/sign không dùng trong demo.
+            </p>
+            <ul class="mt-6 space-y-3 text-sm text-slate-500">
+                <li class="flex items-center gap-2"><i class="fas fa-arrow-right text-blue-500"></i> Resize 640x640, train từ notebook <code>Untitled3.ipynb</code></li>
+                <li class="flex items-center gap-2"><i class="fas fa-arrow-right text-blue-500"></i> Nhận diện nhanh phương tiện, đèn tín hiệu và stop_line</li>
+                <li class="flex items-center gap-2"><i class="fas fa-arrow-right text-blue-500"></i> Dùng tracking để phát hiện xe vượt đèn đỏ trong video</li>
+            </ul>
+        </div>
+
+        <div class="card group transition-colors hover:border-purple-500/30">
+            <div class="mb-6 flex items-center justify-between gap-4">
+                <i class="fas fa-shield-alt text-4xl text-purple-400 transition-transform group-hover:scale-110"></i>
+                <span class="rounded-lg border border-purple-500/20 bg-purple-500/10 px-3 py-1 text-xs font-mono text-purple-300">
+                    {{ status.rfdetr.path if status else "RF-DETR_Small.pt" }}
+                </span>
+            </div>
+            <h3 class="text-2xl font-bold text-white">RF-DETR Small</h3>
+            <p class="mt-4 leading-relaxed text-slate-400">
+                RF-DETR là mô hình transformer hiện đại cho object detection và instance segmentation. Bản cập nhật hiện tại
+                nạp checkpoint RF-DETR_Small.pt bằng RFDETRSegSmall và chỉ hiển thị nhóm class liên quan đến bài toán.
+            </p>
+            <ul class="mt-6 space-y-3 text-sm text-slate-500">
+                <li class="flex items-center gap-2"><i class="fas fa-arrow-right text-purple-400"></i> Load trực tiếp từ <code>models/RF-DETR_Small.pt</code></li>
+                <li class="flex items-center gap-2"><i class="fas fa-arrow-right text-purple-400"></i> Trả về mask, box, confidence và class_name qua RF-DETR</li>
+                <li class="flex items-center gap-2"><i class="fas fa-arrow-right text-purple-400"></i> Phù hợp so sánh ảnh tĩnh với YOLOv26s-seg</li>
+            </ul>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="mb-6">
+            <h3 class="text-2xl font-bold text-white">Thành viên</h3>
+            <p class="mt-2 text-sm text-slate-500">Cần bổ sung tên thật của 3 thành viên để hoàn thiện báo cáo trên web.</p>
+        </div>
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div class="rounded-xl border border-slate-800 bg-slate-950 p-5">
+                <p class="text-xs font-mono uppercase tracking-wider text-slate-500">Thành viên 1</p>
+                <h4 class="mt-3 text-xl font-semibold text-white">[Cần bổ sung]</h4>
+            </div>
+            <div class="rounded-xl border border-slate-800 bg-slate-950 p-5">
+                <p class="text-xs font-mono uppercase tracking-wider text-slate-500">Thành viên 2</p>
+                <h4 class="mt-3 text-xl font-semibold text-white">[Cần bổ sung]</h4>
+            </div>
+            <div class="rounded-xl border border-slate-800 bg-slate-950 p-5">
+                <p class="text-xs font-mono uppercase tracking-wider text-slate-500">Thành viên 3</p>
+                <h4 class="mt-3 text-xl font-semibold text-white">[Cần bổ sung]</h4>
+            </div>
+        </div>
+    </section>
+</div>
+{% endblock %}

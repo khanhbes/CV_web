@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+
+{% set active_page = "qualitative" %}
+
+{% block title %}Trực quan - Traffic SegNet Dashboard{% endblock %}
+
+{% block content %}
+{% set test_image = url_for('static', filename='test_images/test_image.jpg') %}
+
+<div class="space-y-8 pb-20">
+    <header class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div class="space-y-2">
+            <h2 class="text-3xl font-bold text-white">Kết quả Trực quan</h2>
+            <p class="max-w-3xl text-slate-400">Chạy cùng một ảnh test qua YOLOv26s-seg và RF-DETR, sau đó dùng thanh trượt để so sánh ảnh kết quả.</p>
+        </div>
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <label class="rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-300">
+                <div class="mb-1 flex items-center justify-between gap-4">
+                    <span>Confidence</span>
+                    <span id="comparison-conf-value" class="font-mono text-blue-300">0.45</span>
+                </div>
+                <input id="comparison-confidence" type="range" min="0.05" max="0.95" step="0.05" value="0.45" class="w-44">
+            </label>
+            <label class="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-300">
+                <input id="hide-labels" type="checkbox" class="rounded border-slate-700 bg-slate-900 text-blue-500">
+                Ẩn tên box
+            </label>
+            <button id="run-comparison" class="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-3 font-semibold text-white transition-colors hover:bg-blue-500">
+                <i class="fas fa-play"></i> Chạy so sánh sample
+            </button>
+        </div>
+    </header>
+
+    <section id="comparison-alert" class="hidden rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200"></section>
+
+    <section class="grid grid-cols-1 gap-6 lg:grid-cols-4">
+        <div class="lg:col-span-3 space-y-5">
+            <div id="comparison-container" class="relative w-full overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl cursor-ew-resize" style="aspect-ratio: 16 / 9; min-height: 420px;">
+                <div class="absolute inset-0">
+                    <img id="rfdetr-image" src="{{ test_image }}" class="h-full w-full object-cover" alt="Kết quả RF-DETR">
+                    <div class="absolute bottom-5 right-5 rounded-lg border border-purple-400/40 bg-purple-950/80 px-4 py-2 text-sm font-bold text-white backdrop-blur">
+                        RF-DETR
+                    </div>
+                </div>
+
+                <div id="overlay-image" class="absolute inset-0 border-r-2 border-white/80 bg-slate-950" style="clip-path: inset(0 50% 0 0);">
+                    <img id="yolo-image" src="{{ test_image }}" class="h-full w-full object-cover" alt="Kết quả YOLOv26s-seg">
+                    <div class="absolute bottom-5 left-5 rounded-lg border border-blue-400/40 bg-blue-950/80 px-4 py-2 text-sm font-bold text-white backdrop-blur">
+                        YOLOv26s-seg
+                    </div>
+                </div>
+
+                <div id="comparison-loading" class="absolute inset-0 hidden items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+                    <div class="text-center">
+                        <div class="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-blue-400 border-t-transparent"></div>
+                        <p class="font-semibold text-white">Đang chạy 2 model trên ảnh test...</p>
+                        <p class="mt-1 text-sm text-slate-400">RF-DETR dùng checkpoint RF-DETR_Small.pt khi trạng thái sẵn sàng.</p>
+                    </div>
+                </div>
+
+                <div id="slider-handle" class="absolute top-0 bottom-0 z-10 w-1 bg-white/90 pointer-events-none" style="left: 50%;">
+                    <div class="absolute left-1/2 top-1/2 flex h-11 w-11 items-center justify-center rounded-full border-4 border-slate-950 bg-white shadow-2xl" style="transform: translate(-50%, -50%);">
+                        <i class="fas fa-arrows-alt-h text-slate-950"></i>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-col gap-4 px-1 md:flex-row md:items-center md:justify-between">
+                <div class="flex flex-wrap gap-4">
+                    <div class="flex items-center gap-2">
+                        <div class="h-3 w-3 rounded-full bg-blue-400"></div>
+                        <span class="font-mono text-xs text-slate-400">YOLOv26s-seg</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <div class="h-3 w-3 rounded-full bg-purple-400"></div>
+                        <span class="font-mono text-xs text-slate-400">RF-DETR</span>
+                    </div>
+                </div>
+                <p class="text-xs italic text-slate-500">Di chuột qua ảnh để so sánh kết quả</p>
+            </div>
+        </div>
+
+        <aside class="space-y-4">
+            <div class="card">
+                <h3 class="mb-4 text-lg font-semibold text-white">Sample Gallery</h3>
+                <button class="w-full overflow-hidden rounded-xl border border-blue-500/40 bg-slate-900 text-left">
+                    <img src="{{ test_image }}" class="h-32 w-full object-cover opacity-80" alt="Sample">
+                    <div class="p-4">
+                        <p class="font-semibold text-white">Fixed Test Image</p>
+                        <p class="mt-1 text-xs text-slate-500">static/test_images/test_image.jpg</p>
+                    </div>
+                </button>
+            </div>
+
+            <div class="card">
+                <h3 class="mb-4 text-lg font-semibold text-white">Kết quả phát hiện</h3>
+                <div id="comparison-summary" class="space-y-3 text-sm text-slate-400">
+                    <p>Nhấn “Chạy so sánh sample” để tạo ảnh kết quả từ model thật.</p>
+                </div>
+            </div>
+        </aside>
+    </section>
+</div>
+
+<script>
+    const comparisonContainer = document.getElementById('comparison-container');
+    const overlay = document.getElementById('overlay-image');
+    const handle = document.getElementById('slider-handle');
+    const runButton = document.getElementById('run-comparison');
+    const loading = document.getElementById('comparison-loading');
+    const alertBox = document.getElementById('comparison-alert');
+    const summary = document.getElementById('comparison-summary');
+    const yoloImage = document.getElementById('yolo-image');
+    const rfdetrImage = document.getElementById('rfdetr-image');
+
+    function updatePosition(clientX) {
+        const rect = comparisonContainer.getBoundingClientRect();
+        const position = Math.min(Math.max(((clientX - rect.left) / rect.width) * 100, 0), 100);
+        overlay.style.clipPath = `inset(0 ${100 - position}% 0 0)`;
+        handle.style.left = `${position}%`;
+    }
+
+    function renderSummary(results, errors) {
+        const rows = [];
+        for (const key of ['yolo', 'rfdetr']) {
+            if (results[key]) {
+                const item = results[key];
+                const debug = item.debug?.inference || {};
+                const detections = (item.detections || []).slice(0, 8).map((detection) => `
+                    <li class="flex items-center justify-between gap-3">
+                        <span class="truncate">${detection.class}</span>
+                        <span class="font-mono text-blue-300">${(Number(detection.confidence || 0) * 100).toFixed(1)}%</span>
+                    </li>
+                    <li class="-mt-1 text-[10px] font-mono text-slate-600">
+                        id ${detection.class_id ?? 'n/a'} · index ${detection.class_index ?? 'n/a'} · bbox [${(detection.bbox || []).join(', ')}]
+                    </li>
+                `).join('');
+                const debugLine = [
+                    debug.raw_box_count !== undefined ? `${debug.raw_box_count} raw boxes` : null,
+                    debug.returned_detection_count !== undefined ? `${debug.returned_detection_count} shown` : null,
+                    debug.display_threshold !== undefined ? `display >= ${Number(debug.display_threshold).toFixed(2)}` : null,
+                    debug.class_id_base !== undefined ? `class id base ${debug.class_id_base}` : null,
+                ].filter(Boolean).join(' · ');
+                rows.push(`
+                    <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                        <div class="flex items-center justify-between gap-3">
+                            <strong class="text-white">${item.model}</strong>
+                            <span class="font-mono text-xs text-slate-500">${item.metrics.processing_time}</span>
+                        </div>
+                        <p class="mt-2 text-xs text-slate-400">${item.metrics.total_objects} objects · ${item.metrics.violations} violations · ${item.metrics.avg_confidence}% avg conf</p>
+                        ${debugLine ? `<p class="mt-1 text-[10px] font-mono text-slate-500">${debugLine}</p>` : ''}
+                        <ul class="mt-3 space-y-1 text-xs text-slate-300">${detections || '<li>Không có detection vượt ngưỡng confidence.</li>'}</ul>
+                        ${item.warning ? `<p class="mt-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">RF-DETR chưa chạy được checkpoint thật.</p>` : ''}
+                    </div>
+                `);
+            } else if (errors[key]) {
+                rows.push(`
+                    <div class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                        <strong class="text-amber-200">${key === 'rfdetr' ? 'RF-DETR' : 'YOLOv26s-seg'}</strong>
+                        <p class="mt-2 text-xs text-amber-100">${errors[key]}</p>
+                    </div>
+                `);
+            }
+        }
+        summary.innerHTML = rows.join('');
+    }
+
+    comparisonContainer.addEventListener('mousemove', (event) => updatePosition(event.clientX));
+    comparisonContainer.addEventListener('mousedown', (event) => updatePosition(event.clientX));
+    comparisonContainer.addEventListener('touchstart', (event) => updatePosition(event.touches[0].clientX), { passive: true });
+    comparisonContainer.addEventListener('touchmove', (event) => updatePosition(event.touches[0].clientX), { passive: true });
+
+    const hideLabels = document.getElementById('hide-labels');
+    const confidenceInput = document.getElementById('comparison-confidence');
+    const confidenceValue = document.getElementById('comparison-conf-value');
+    let hasComparisonResult = false;
+
+    confidenceInput.addEventListener('input', () => {
+        confidenceValue.textContent = Number(confidenceInput.value).toFixed(2);
+    });
+
+    async function runComparison() {
+        loading.classList.remove('hidden');
+        loading.classList.add('flex');
+        alertBox.classList.add('hidden');
+        runButton.disabled = true;
+
+        try {
+            const formData = new FormData();
+            formData.append('confidence', confidenceInput.value);
+            formData.append('iou', '0.5');
+            formData.append('show_labels', hideLabels.checked ? '0' : '1');
+            formData.append('show_conf', '1');
+            const response = await fetch(`{{ url_for("api_compare_sample") }}?t=${Date.now()}`, {
+                method: 'POST',
+                body: formData,
+                cache: 'no-store',
+            });
+            const payload = await response.json();
+
+            if (payload.results.yolo) {
+                yoloImage.src = payload.results.yolo.result_url + `?t=${Date.now()}`;
+            }
+            if (payload.results.rfdetr) {
+                rfdetrImage.src = payload.results.rfdetr.result_url + `?t=${Date.now()}`;
+            }
+            renderSummary(payload.results || {}, payload.errors || {});
+            hasComparisonResult = true;
+
+            if (payload.errors && Object.keys(payload.errors).length > 0) {
+                alertBox.textContent = Object.values(payload.errors).join(' ');
+                alertBox.classList.remove('hidden');
+            }
+        } catch (error) {
+            alertBox.textContent = error.message || 'Không thể chạy so sánh sample.';
+            alertBox.classList.remove('hidden');
+        } finally {
+            loading.classList.add('hidden');
+            loading.classList.remove('flex');
+            runButton.disabled = false;
+        }
+    }
+
+    runButton.addEventListener('click', runComparison);
+    hideLabels.addEventListener('change', () => {
+        if (hasComparisonResult) {
+            runComparison();
+        }
+    });
+    confidenceInput.addEventListener('change', () => {
+        if (hasComparisonResult) {
+            runComparison();
+        }
+    });
+</script>
+{% endblock %}

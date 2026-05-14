@@ -1,0 +1,49 @@
+{
+  "_help": "Models always run inference on all trained classes. Edit visible_classes to control which classes are drawn and returned to the web UI. Current setting shows vehicles, traffic lights, and stop_line only.",
+  "global": {
+    "visible_classes": ["*"],
+    "hidden_classes": []
+  },
+  "yolo": {
+    "visible_classes": [
+      "ambulance",
+      "car",
+      "fire_truck",
+      "motorcycle",
+      "police_car",
+      "light_left_green",
+      "light_left_red",
+      "light_left_yellow",
+      "light_right_green",
+      "light_straight_arrow_green",
+      "light_straight_arrow_red",
+      "light_straight_arrow_yellow",
+      "light_straight_circle_green",
+      "light_straight_circle_red",
+      "light_straight_circle_yellow",
+      "stop_line"
+    ],
+    "hidden_classes": []
+  },
+  "rfdetr": {
+    "visible_classes": [
+      "ambulance",
+      "car",
+      "fire_truck",
+      "motorcycle",
+      "police_car",
+      "light_left_green",
+      "light_left_red",
+      "light_left_yellow",
+      "light_right_green",
+      "light_straight_arrow_green",
+      "light_straight_arrow_red",
+      "light_straight_arrow_yellow",
+      "light_straight_circle_green",
+      "light_straight_circle_red",
+      "light_straight_circle_yellow",
+      "stop_line"
+    ],
+    "hidden_classes": []
+  }
+}

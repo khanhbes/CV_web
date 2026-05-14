@@ -1,0 +1,12 @@
+# Web backend
+flask
+werkzeug
+
+# Computer vision and model runtime
+numpy
+opencv-python
+pillow
+torch
+ultralytics
+rfdetr
+supervision

@@ -1,0 +1,249 @@
+{% extends "base.html" %}
+
+{% set active_page = "quantitative" %}
+
+{% block title %}Định lượng - Traffic SegNet Dashboard{% endblock %}
+
+{% block content %}
+<div class="space-y-10 pb-20">
+    <header class="space-y-2">
+        <h2 class="text-3xl font-bold text-white">So sánh Định lượng</h2>
+        <p class="text-slate-400">Trang này chỉ so sánh chỉ số mAP của YOLOv26s-seg và RF-DETR Small.</p>
+    </header>
+
+    <div class="grid grid-cols-1 gap-6 md:grid-cols-4">
+        {% for row in quantitative.summaries %}
+        <div class="card text-center">
+            <p class="text-xs font-mono uppercase tracking-wider text-slate-500">{{ row.model }}</p>
+            <h4 class="mb-2 mt-3 text-2xl font-bold {% if 'YOLO' in row.model %}text-blue-400{% else %}text-purple-400{% endif %}">
+                {{ "%.2f"|format(row.map50 or 0) }}%
+            </h4>
+            <p class="text-slate-400">mAP50 Segmentation</p>
+            <span class="text-sm text-slate-500">epoch chuẩn hóa {{ row.epoch }}</span>
+        </div>
+        <div class="card text-center">
+            <p class="text-xs font-mono uppercase tracking-wider text-slate-500">{{ row.model }}</p>
+            <h4 class="mb-2 mt-3 text-2xl font-bold {% if 'YOLO' in row.model %}text-blue-400{% else %}text-purple-400{% endif %}">
+                {{ "%.2f"|format(row.map5095 or 0) }}%
+            </h4>
+            <p class="text-slate-400">mAP50-95 / AP</p>
+            <span class="text-sm text-slate-500">epoch chuẩn hóa {{ row.epoch }}</span>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="grid grid-cols-1 gap-10 xl:grid-cols-2">
+        <div class="card">
+            <div class="mb-6">
+                <h3 class="text-lg font-semibold text-slate-200">Tổng quan mAP</h3>
+                <p class="text-xs text-slate-500">So sánh mAP50 và mAP50-95 giữa hai mô hình.</p>
+            </div>
+            <canvas id="summaryChart" height="260"></canvas>
+        </div>
+
+        <div class="card">
+            <div class="mb-6">
+                <h3 class="text-lg font-semibold text-slate-200">Quá trình train theo mAP</h3>
+                <p class="text-xs text-slate-500">YOLO đọc từ log training; RF-DETR dùng curve 150 epoch nội suy từ metric final.</p>
+            </div>
+            <canvas id="curveChart" height="260"></canvas>
+            <div class="mt-6 grid grid-cols-1 gap-3 text-xs text-slate-300 sm:grid-cols-2">
+                {% for row in quantitative.summaries %}
+                <div class="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                    <div class="mb-2 flex items-center justify-between gap-3">
+                        <span class="font-semibold text-white">{{ row.model }}</span>
+                        <span class="font-mono">{{ "%.2f"|format(row.map50 or 0) }}% mAP50</span>
+                    </div>
+                    <div class="h-2 overflow-hidden rounded-full bg-slate-800">
+                        <div class="h-full rounded-full {% if 'YOLO' in row.model %}bg-blue-500{% else %}bg-purple-500{% endif %}" style="width: {{ row.map50 or 0 }}%;"></div>
+                    </div>
+                    <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
+                        <div class="h-full rounded-full {% if 'YOLO' in row.model %}bg-blue-300{% else %}bg-purple-300{% endif %}" style="width: {{ row.map5095 or 0 }}%;"></div>
+                    </div>
+                    <p class="mt-2 font-mono text-slate-500">{{ "%.2f"|format(row.map5095 or 0) }}% mAP50-95/AP</p>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="mb-6">
+            <h3 class="text-lg font-semibold text-slate-200">Kết quả từng class</h3>
+            <p class="text-xs text-slate-500">So sánh mAP theo từng class đang hiển thị, không bao gồm person_no_helmet và person_with_helmet.</p>
+        </div>
+        <canvas id="classChart" height="220"></canvas>
+        <div class="mt-6 overflow-x-auto">
+            <table class="w-full border-collapse text-left text-sm">
+                <thead>
+                    <tr class="border-b border-slate-800 text-xs uppercase tracking-wider text-slate-500">
+                        <th class="py-3 pr-4">Class</th>
+                        <th class="py-3 pr-4">YOLO mAP50</th>
+                        <th class="py-3 pr-4">RF-DETR mAP50</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800 text-slate-300">
+                    {% for row in quantitative.class_rows %}
+                    <tr>
+                        <td class="py-3 pr-4 font-mono text-xs text-white">{{ row.class }}</td>
+                        <td class="py-3 pr-4">
+                            <div class="flex min-w-48 items-center gap-3">
+                                <div class="h-2 flex-1 overflow-hidden rounded-full bg-slate-800">
+                                    <div class="h-full rounded-full bg-blue-500" style="width: {{ row.yolo or 0 }}%;"></div>
+                                </div>
+                                <span class="w-14 text-right font-mono">{{ "%.2f"|format(row.yolo or 0) }}%</span>
+                            </div>
+                        </td>
+                        <td class="py-3 pr-4">
+                            <div class="flex min-w-48 items-center gap-3">
+                                <div class="h-2 flex-1 overflow-hidden rounded-full bg-slate-800">
+                                    <div class="h-full rounded-full bg-purple-500" style="width: {{ row.rfdetr or 0 }}%;"></div>
+                                </div>
+                                <span class="w-14 text-right font-mono">{{ "%.2f"|format(row.rfdetr or 0) }}%</span>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card overflow-hidden">
+        <div class="mb-6">
+            <h3 class="text-lg font-semibold text-slate-200">Bảng so sánh</h3>
+            <p class="text-xs text-slate-500">Chỉ giữ các chỉ số mAP chính của hai mô hình.</p>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full border-collapse text-left">
+                <thead>
+                    <tr class="border-b border-slate-800 text-xs uppercase tracking-wider text-slate-500">
+                        <th class="py-3 pr-4">Model</th>
+                        <th class="py-3 pr-4">Epoch</th>
+                        <th class="py-3 pr-4">Precision</th>
+                        <th class="py-3 pr-4">Recall</th>
+                        <th class="py-3 pr-4">mAP50</th>
+                        <th class="py-3 pr-4">mAP50-95/AP</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800 text-sm text-slate-300">
+                    {% for row in quantitative.summaries %}
+                    <tr>
+                        <td class="py-4 pr-4 font-semibold text-white">{{ row.model }}</td>
+                        <td class="py-4 pr-4">{{ row.epoch }}</td>
+                        <td class="py-4 pr-4">{{ "%.2f"|format(row.precision or 0) }}%</td>
+                        <td class="py-4 pr-4">{{ "%.2f"|format(row.recall or 0) }}%</td>
+                        <td class="py-4 pr-4 {% if 'YOLO' in row.model %}text-blue-400{% else %}text-purple-400{% endif %}">{{ "%.2f"|format(row.map50 or 0) }}%</td>
+                        <td class="py-4 pr-4">{{ "%.2f"|format(row.map5095 or 0) }}%</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    const quantitative = {{ quantitative|tojson }};
+    const gridColor = 'rgba(30, 41, 59, 0.8)';
+    const tickColor = '#94a3b8';
+    const colors = ['rgba(59, 130, 246, 0.82)', 'rgba(168, 85, 247, 0.82)'];
+
+    new Chart(document.getElementById('summaryChart').getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: quantitative.summaries.map((item) => item.model),
+            datasets: [{
+                label: 'mAP50',
+                data: quantitative.summaries.map((item) => item.map50 || 0),
+                backgroundColor: colors,
+                borderRadius: 5
+            }, {
+                label: 'mAP50-95/AP',
+                data: quantitative.summaries.map((item) => item.map5095 || 0),
+                backgroundColor: ['rgba(96, 165, 250, 0.55)', 'rgba(216, 180, 254, 0.55)'],
+                borderRadius: 5
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { labels: { color: tickColor } } },
+            scales: {
+                y: { beginAtZero: true, max: 100, grid: { color: gridColor }, ticks: { color: tickColor } },
+                x: { grid: { color: gridColor }, ticks: { color: tickColor } }
+            }
+        }
+    });
+
+    const yoloCurve = quantitative.curves.yolo;
+    const rfdetrCurve = quantitative.curves.rfdetr;
+    new Chart(document.getElementById('curveChart').getContext('2d'), {
+        type: 'line',
+        data: {
+            datasets: [{
+                label: 'YOLO mAP50',
+                data: yoloCurve.map((item) => ({x: item.epoch, y: item.map50 || 0})),
+                borderColor: '#3b82f6',
+                backgroundColor: 'rgba(59,130,246,0.12)',
+                tension: 0.35
+            }, {
+                label: 'YOLO mAP50-95',
+                data: yoloCurve.map((item) => ({x: item.epoch, y: item.map5095 || 0})),
+                borderColor: '#93c5fd',
+                backgroundColor: 'rgba(147,197,253,0.10)',
+                borderDash: [6, 5],
+                tension: 0.35
+            }, {
+                label: 'RF-DETR mAP50',
+                data: rfdetrCurve.map((item) => ({x: item.epoch, y: item.map50 || 0})),
+                borderColor: '#a855f7',
+                backgroundColor: 'rgba(168,85,247,0.12)',
+                tension: 0.35
+            }, {
+                label: 'RF-DETR mAP50-95',
+                data: rfdetrCurve.map((item) => ({x: item.epoch, y: item.map5095 || 0})),
+                borderColor: '#d8b4fe',
+                backgroundColor: 'rgba(216,180,254,0.10)',
+                borderDash: [6, 5],
+                tension: 0.35
+            }]
+        },
+        options: {
+            responsive: true,
+            parsing: false,
+            plugins: { legend: { labels: { color: tickColor } } },
+            scales: {
+                y: { beginAtZero: true, max: 100, grid: { color: gridColor }, ticks: { color: tickColor } },
+                x: { type: 'linear', min: 1, max: 150, grid: { color: gridColor }, ticks: { color: tickColor } }
+            }
+        }
+    });
+
+    new Chart(document.getElementById('classChart').getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: quantitative.class_rows.map((item) => item.class),
+            datasets: [{
+                label: 'YOLO class mAP50',
+                data: quantitative.class_rows.map((item) => item.yolo || 0),
+                backgroundColor: 'rgba(59, 130, 246, 0.78)',
+                borderRadius: 5
+            }, {
+                label: 'RF-DETR class mAP50',
+                data: quantitative.class_rows.map((item) => item.rfdetr || 0),
+                backgroundColor: 'rgba(168, 85, 247, 0.82)',
+                borderRadius: 5
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { labels: { color: tickColor } } },
+            scales: {
+                y: { beginAtZero: true, max: 100, grid: { color: gridColor }, ticks: { color: tickColor } },
+                x: { grid: { color: gridColor }, ticks: { color: tickColor } }
+            }
+        }
+    });
+
+</script>
+{% endblock %}
