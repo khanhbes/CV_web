@@ -2,11 +2,13 @@ import cv2
 import numpy as np
 import supervision as sv
 from PIL import Image
+from pathlib import Path
 from rfdetr import RFDETRSegSmall
 
 # 1. Khai báo đường dẫn file
-model_path = r"C:\Users\khanh\OneDrive\Desktop\streamlit_web\models\RF-DETR_Small.pt"
-image_path = r"C:\Users\khanh\OneDrive\Desktop\streamlit_web\image.png"
+BASE_DIR = Path(__file__).resolve().parent
+model_path = BASE_DIR / "models" / "RF-DETR_Small.pt"
+image_path = BASE_DIR / "image.png"
 
 def test_rfdetr_segmentation():
     try:

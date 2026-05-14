@@ -43,3 +43,4 @@ models/*
 *.mov
 metrics.json
 results_*.csv
+!results_26s.csv

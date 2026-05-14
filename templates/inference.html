@@ -343,14 +343,16 @@
         const selectedTask = new FormData(form).get('task');
         const yoloRadio = document.querySelector('input[name="model"][value="yolo"]');
         const rfdetrRadio = document.querySelector('input[name="model"][value="rfdetr"]');
-        const requiresYolo = selectedTask === 'video' || selectedTask === 'redlight';
+        const requiresYolo = selectedTask === 'video';
 
         if (requiresYolo) {
             yoloRadio.checked = true;
             rfdetrRadio.disabled = true;
-            taskHint.textContent = selectedTask === 'redlight'
-                ? 'Tác vụ vượt đèn đỏ dùng YOLOv26s-seg để detect, track phương tiện và kiểm tra cắt qua vạch dừng.'
-                : 'Video detection hiện dùng YOLOv26s-seg để đảm bảo tốc độ xử lý từng frame.';
+            taskHint.textContent = 'Video detection hiện dùng YOLOv26s-seg để đảm bảo tốc độ xử lý từng frame.';
+            taskHint.classList.remove('hidden');
+        } else if (selectedTask === 'redlight') {
+            rfdetrRadio.disabled = false;
+            taskHint.textContent = 'Tác vụ vượt đèn đỏ dùng model đang chọn để detect phương tiện, đèn tín hiệu và stopline; chỉ xét vi phạm sau khi bắt được stopline thật.';
             taskHint.classList.remove('hidden');
         } else {
             rfdetrRadio.disabled = false;
@@ -439,6 +441,7 @@
         originalBox.className = 'aspect-video overflow-hidden rounded-xl bg-slate-800';
         resultBox.className = 'aspect-video overflow-hidden rounded-xl bg-slate-800';
         resultBox.style.minHeight = '';
+        resultBox.style.maxHeight = '';
         segmentedImage.className = 'h-full w-full object-cover';
         segmentedVideo.className = 'hidden h-full w-full object-cover';
         document.getElementById('result-media-title').textContent = 'Ảnh kết quả';
@@ -492,8 +495,9 @@
 
         mediaGrid.className = 'grid grid-cols-1 gap-6';
         originalPanel.classList.add('hidden');
-        resultBox.className = 'aspect-video overflow-hidden rounded-xl border border-rose-500/30 bg-black';
-        resultBox.style.minHeight = 'min(72vh, 760px)';
+        resultBox.className = 'mx-auto aspect-video w-full max-w-5xl overflow-hidden rounded-xl border border-rose-500/30 bg-black';
+        resultBox.style.minHeight = '';
+        resultBox.style.maxHeight = 'min(58vh, 560px)';
         document.getElementById('result-media-title').textContent = 'Video live detect';
 
         originalImage.classList.add('hidden');

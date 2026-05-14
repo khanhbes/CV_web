@@ -1,5 +1,5 @@
 {
-  "_help": "Models always run inference on all trained classes. Edit visible_classes to control which classes are drawn and returned to the web UI. Current setting shows vehicles, traffic lights, and stop_line only.",
+  "_help": "Demo UI draws and returns only these 15 public classes. stop_line is intentionally not displayed here; red-light violation uses stop_line internally for 5s mask calibration.",
   "global": {
     "visible_classes": ["*"],
     "hidden_classes": []
@@ -20,8 +20,7 @@
       "light_straight_arrow_yellow",
       "light_straight_circle_green",
       "light_straight_circle_red",
-      "light_straight_circle_yellow",
-      "stop_line"
+      "light_straight_circle_yellow"
     ],
     "hidden_classes": []
   },
@@ -41,8 +40,7 @@
       "light_straight_arrow_yellow",
       "light_straight_circle_green",
       "light_straight_circle_red",
-      "light_straight_circle_yellow",
-      "stop_line"
+      "light_straight_circle_yellow"
     ],
     "hidden_classes": []
   }

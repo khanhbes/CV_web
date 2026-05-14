@@ -106,6 +106,23 @@ RF_DETR_CLASS_TO_ID = {name: idx for idx, name in enumerate(RF_DETR_CLASS_NAMES)
 YOLO_INFERENCE_CLASS_IDS = list(range(len(YOLO_CLASS_NAMES)))
 RF_DETR_INFERENCE_CLASS_IDS = list(range(len(RF_DETR_CLASS_NAMES)))
 VEHICLE_CLASS_NAMES = {"ambulance", "car", "fire_truck", "motorcycle", "police_car"}
+DEMO_PUBLIC_CLASS_NAMES = (
+    "ambulance",
+    "car",
+    "fire_truck",
+    "motorcycle",
+    "police_car",
+    "light_left_green",
+    "light_left_red",
+    "light_left_yellow",
+    "light_right_green",
+    "light_straight_arrow_green",
+    "light_straight_arrow_red",
+    "light_straight_arrow_yellow",
+    "light_straight_circle_green",
+    "light_straight_circle_red",
+    "light_straight_circle_yellow",
+)
 RF_DETR_SCORE_FLOOR = 0.05
 RF_DETR_VEHICLE_SCORE_FLOOR = 0.03
 RF_DETR_INTERNAL_SCORE_FLOOR = 0.01
@@ -138,7 +155,7 @@ GREEN_LIGHT_CLASS_NAMES = {
 STOP_LINE_CLASS_NAME = "stop_line"
 PRIORITY_VEHICLE_CLASS_NAMES = {"ambulance", "fire_truck", "police_car"}
 
-REDLIGHT_STOPLINE_CALIBRATION_SECONDS = 3.0
+REDLIGHT_STOPLINE_CALIBRATION_SECONDS = 5.0
 REDLIGHT_LIGHT_MEMORY_SECONDS = 1.5
 REDLIGHT_TOUCH_DIST = 15.0
 REDLIGHT_WARNING_DEBOUNCE_FRAMES = 8
@@ -292,8 +309,21 @@ def configured_display_class_set(model_key: str) -> set[str]:
     return set(configured_display_class_names(model_key))
 
 
+def demo_public_class_names(model_key: str) -> list[str]:
+    configured = set(configured_display_class_names(model_key))
+    return [name for name in DEMO_PUBLIC_CLASS_NAMES if name in configured]
+
+
+def demo_public_class_set(model_key: str) -> set[str]:
+    return set(demo_public_class_names(model_key))
+
+
+def yolo_class_ids_for_names(names: set[str] | list[str] | tuple[str, ...]) -> list[int]:
+    return sorted(YOLO_CLASS_TO_ID[name] for name in names if name in YOLO_CLASS_TO_ID)
+
+
 def class_display_status(model_key: str) -> dict[str, Any]:
-    visible = configured_display_class_names(model_key)
+    visible = demo_public_class_names(model_key)
     config = class_display_config()
     return {
         "config_path": CLASS_DISPLAY_CONFIG_PATH.name,
@@ -758,12 +788,13 @@ def load_quantitative_payload() -> dict[str, Any]:
 def predict_yolo(source_path: Path, confidence: float, iou: float, show_labels: bool = True, show_conf: bool = True) -> dict[str, Any]:
     started = time.perf_counter()
     model = get_yolo_model()
-    visible_classes = configured_display_class_set("yolo")
-    visible_class_names = configured_display_class_names("yolo")
+    visible_classes = demo_public_class_set("yolo")
+    visible_class_names = demo_public_class_names("yolo")
     result = model.predict(
         str(source_path),
         conf=confidence,
         iou=iou,
+        classes=yolo_class_ids_for_names(visible_classes),
         retina_masks=True,
         verbose=False,
     )[0]
@@ -916,15 +947,15 @@ def rfdetr_class_index(label: int) -> int:
 
 
 def rfdetr_prediction_name(predictions, index: int, label: int) -> str:
+    normalized_index = rfdetr_class_index(label)
+    if 0 <= normalized_index < len(RF_DETR_CLASS_NAMES):
+        return class_name(normalized_index, "rfdetr")
     data = getattr(predictions, "data", {}) or {}
     names = data.get("class_name") if isinstance(data, dict) else None
     if names is not None and index < len(names):
         value = names[index]
         if value and str(value) in RF_DETR_CLASS_TO_ID:
             return str(value)
-    normalized_index = rfdetr_class_index(label)
-    if 0 <= normalized_index < len(RF_DETR_CLASS_NAMES):
-        return class_name(normalized_index, "rfdetr")
     return f"class_{label}"
 
 
@@ -936,7 +967,7 @@ def draw_rfdetr_output(
     show_labels: bool = True,
     show_conf: bool = True,
 ) -> list[dict[str, Any]]:
-    visible_classes = configured_display_class_set("rfdetr")
+    visible_classes = demo_public_class_set("rfdetr")
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     canvas = Image.fromarray(image_rgb).convert("RGBA")
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
@@ -954,12 +985,6 @@ def draw_rfdetr_output(
     classes = np.full(len(boxes), -1, dtype=int) if classes_raw is None else np.asarray(classes_raw, dtype=int)
     masks_raw = getattr(predictions, "mask", None)
     masks = None if masks_raw is None else np.asarray(masks_raw)
-    suppressors = [
-        (box, rfdetr_prediction_name(predictions, index, int(label)), float(score))
-        for index, (box, score, label) in enumerate(zip(boxes, scores, classes))
-        if rfdetr_prediction_name(predictions, index, int(label)) in RF_DETR_ROAD_SUPPRESSOR_CLASS_NAMES
-        and float(score) >= RF_DETR_ROAD_SUPPRESSOR_MIN_CONFIDENCE
-    ]
 
     palette = [(168, 85, 247, 92), (244, 114, 182, 92), (14, 165, 233, 92), (34, 197, 94, 92)]
     for idx, (box, score, label) in enumerate(zip(boxes, scores, classes)):
@@ -967,8 +992,6 @@ def draw_rfdetr_output(
         if name not in visible_classes:
             continue
         if float(score) < rfdetr_display_threshold(name, requested_confidence):
-            continue
-        if name in VEHICLE_CLASS_NAMES and is_suppressed_rfdetr_vehicle(box, suppressors):
             continue
         color = palette[idx % len(palette)]
         if masks is not None and idx < len(masks):
@@ -1000,7 +1023,7 @@ def draw_rfdetr_output(
 def predict_rfdetr(source_path: Path, confidence: float, show_labels: bool = True, show_conf: bool = True) -> dict[str, Any]:
     started = time.perf_counter()
     model = get_rfdetr_model()
-    visible_class_names = configured_display_class_names("rfdetr")
+    visible_class_names = demo_public_class_names("rfdetr")
     image_bgr = cv2.imread(str(source_path))
     if image_bgr is None:
         raise RuntimeError("Không đọc được ảnh đầu vào.")
@@ -1050,6 +1073,167 @@ def predict_rfdetr(source_path: Path, confidence: float, show_labels: bool = Tru
     }
 
 
+def rfdetr_predict_frame(model, frame_bgr: np.ndarray, max_size: int = RF_DETR_INFERENCE_MAX_SIZE):
+    height, width = frame_bgr.shape[:2]
+    scale = min(1.0, float(max_size) / max(width, height)) if max_size > 0 else 1.0
+    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    if scale < 1.0:
+        infer_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+        frame_rgb = cv2.resize(frame_rgb, infer_size, interpolation=cv2.INTER_AREA)
+    predictions = model.predict(Image.fromarray(frame_rgb), threshold=RF_DETR_INTERNAL_SCORE_FLOOR)
+    return predictions, (1.0 / scale if scale > 0 else 1.0)
+
+
+def rfdetr_detection_arrays(
+    predictions,
+    min_confidence: float,
+    allowed_names: set[str] | None = None,
+    box_scale: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    boxes = np.asarray(getattr(predictions, "xyxy", []), dtype=float)
+    if boxes.size == 0:
+        boxes = np.empty((0, 4), dtype=float)
+    elif boxes.ndim == 1:
+        boxes = boxes.reshape(1, 4)
+    scores_raw = getattr(predictions, "confidence", None)
+    classes_raw = getattr(predictions, "class_id", None)
+    scores = np.ones(len(boxes), dtype=float) if scores_raw is None else np.asarray(scores_raw, dtype=float)
+    classes = np.full(len(boxes), -1, dtype=int) if classes_raw is None else np.asarray(classes_raw, dtype=int)
+
+    kept_boxes: list[np.ndarray] = []
+    kept_labels: list[int] = []
+    kept_scores: list[float] = []
+    for idx, (box, score, label) in enumerate(zip(boxes, scores, classes)):
+        score = float(score)
+        if score < min_confidence:
+            continue
+        name = rfdetr_prediction_name(predictions, idx, int(label))
+        if allowed_names is not None and name not in allowed_names:
+            continue
+        class_idx = RF_DETR_CLASS_TO_ID.get(name)
+        if class_idx is None:
+            class_idx = rfdetr_class_index(int(label))
+        if class_idx < 0:
+            continue
+        kept_boxes.append(np.asarray(box, dtype=float) * float(box_scale))
+        kept_labels.append(int(class_idx))
+        kept_scores.append(score)
+
+    return (
+        np.asarray(kept_boxes, dtype=float).reshape(-1, 4),
+        np.asarray(kept_labels, dtype=int),
+        np.asarray(kept_scores, dtype=float),
+    )
+
+
+def stopline_line_from_rfdetr_predictions(
+    predictions,
+    width: int,
+    height: int,
+    min_confidence: float,
+) -> tuple[tuple[int, int, int, int, float] | None, np.ndarray | None]:
+    masks_raw = getattr(predictions, "mask", None)
+    if masks_raw is None:
+        return None, None
+    masks = np.asarray(masks_raw)
+    boxes = np.asarray(getattr(predictions, "xyxy", []), dtype=float)
+    if boxes.size == 0:
+        boxes = np.empty((0, 4), dtype=float)
+    elif boxes.ndim == 1:
+        boxes = boxes.reshape(1, 4)
+    scores_raw = getattr(predictions, "confidence", None)
+    classes_raw = getattr(predictions, "class_id", None)
+    scores = np.ones(len(masks), dtype=float) if scores_raw is None else np.asarray(scores_raw, dtype=float)
+    classes = np.full(len(masks), -1, dtype=int) if classes_raw is None else np.asarray(classes_raw, dtype=int)
+    combined_mask = np.zeros((height, width), dtype=np.uint8)
+    stopline_detections: list[dict[str, Any]] = []
+    best_line = None
+    best_score = 0.0
+
+    for idx, (mask, score, label) in enumerate(zip(masks, scores, classes)):
+        if float(score) < min_confidence:
+            continue
+        if rfdetr_prediction_name(predictions, idx, int(label)) != STOP_LINE_CLASS_NAME:
+            continue
+        mask_array = mask.astype(np.float32)
+        if mask_array.shape[:2] != (height, width):
+            mask_array = cv2.resize(mask_array, (width, height), interpolation=cv2.INTER_NEAREST)
+        mask_bool = mask_array > 0.5
+        combined_mask = cv2.max(combined_mask, mask_bool.astype(np.uint8) * 255)
+        stopline_detections.append(
+            {
+                "box": boxes[idx].copy() if idx < len(boxes) else np.array([0, 0, width, height], dtype=np.float32),
+                "conf": float(score),
+                "mask": mask_bool,
+            }
+        )
+
+    for detection in merge_stopline_detections(stopline_detections):
+        line_info = line_inside_stopline_mask(detection["mask"])
+        if line_info is None:
+            continue
+        score_value = float(line_info[4]) * float(detection["conf"])
+        if score_value > best_score:
+            best_line = line_info
+            best_score = score_value
+
+    if not combined_mask.any():
+        combined_mask = None
+    return best_line, combined_mask
+
+
+def assign_simple_track_ids(
+    boxes: np.ndarray,
+    labels: np.ndarray,
+    track_boxes: dict[int, np.ndarray],
+    track_labels: dict[int, int],
+    track_last_seen: dict[int, int],
+    next_track_id: int,
+    frame_idx: int,
+) -> tuple[np.ndarray, int]:
+    assigned_ids: list[int] = []
+    used_tracks: set[int] = set()
+    for box, label in zip(boxes, labels):
+        label = int(label)
+        px, py = bottom_center(box)
+        best_track = None
+        best_score = -1.0
+        box_w = max(float(box[2] - box[0]), 1.0)
+        box_h = max(float(box[3] - box[1]), 1.0)
+        max_distance = max(80.0, 1.8 * max(box_w, box_h))
+
+        for track_id, previous_box in track_boxes.items():
+            if track_id in used_tracks or track_labels.get(track_id) != label:
+                continue
+            ppx, ppy = bottom_center(previous_box)
+            distance = float(np.hypot(px - ppx, py - ppy))
+            iou_score = redlight_box_iou(np.asarray(box), np.asarray(previous_box))
+            if iou_score < 0.05 and distance > max_distance:
+                continue
+            distance_score = max(0.0, 1.0 - distance / max_distance)
+            score = iou_score * 2.0 + distance_score
+            if score > best_score:
+                best_track = track_id
+                best_score = score
+
+        if best_track is None:
+            best_track = next_track_id
+            next_track_id += 1
+        used_tracks.add(best_track)
+        track_boxes[best_track] = np.asarray(box, dtype=float)
+        track_labels[best_track] = label
+        track_last_seen[best_track] = frame_idx
+        assigned_ids.append(best_track)
+
+    stale_ids = [track_id for track_id, seen in track_last_seen.items() if frame_idx - seen > REDLIGHT_MAX_TRACK_HISTORY]
+    for track_id in stale_ids:
+        track_boxes.pop(track_id, None)
+        track_labels.pop(track_id, None)
+        track_last_seen.pop(track_id, None)
+
+    return np.asarray(assigned_ids, dtype=int), next_track_id
+
+
 def write_yolo_video(
     source_path: Path,
     confidence: float,
@@ -1059,8 +1243,9 @@ def write_yolo_video(
 ) -> dict[str, Any]:
     started = time.perf_counter()
     model = get_yolo_model()
-    visible_classes = configured_display_class_set("yolo")
-    visible_class_names = configured_display_class_names("yolo")
+    visible_classes = demo_public_class_set("yolo")
+    visible_class_names = demo_public_class_names("yolo")
+    visible_class_ids = yolo_class_ids_for_names(visible_classes)
     cap = cv2.VideoCapture(str(source_path))
     if not cap.isOpened():
         raise RuntimeError("Không mở được video đầu vào.")
@@ -1085,7 +1270,7 @@ def write_yolo_video(
         if not ok:
             break
         frame_count += 1
-        result = model.predict(frame, conf=confidence, iou=iou, retina_masks=True, verbose=False)[0]
+        result = model.predict(frame, conf=confidence, iou=iou, classes=visible_class_ids, retina_masks=True, verbose=False)[0]
         labels = result.boxes.cls.cpu().numpy().astype(int) if result.boxes is not None else np.array([], dtype=int)
         raw_detections += int(len(labels))
         plotted, displayed = draw_yolo_result_on_frame(
@@ -1182,6 +1367,7 @@ def oriented_line_coefficients(
 class RedlightTrackState:
     last_region: int | None = None
     first_seen: bool = False
+    last_event_frame: int = -1000
     last_warning_frame: int = -1000
     last_crossing_frame: int = -1000
     label: str = "Safe"
@@ -1296,14 +1482,19 @@ class RedlightStoplineCalibrator:
     def maybe_finish(self, width: int, height: int) -> None:
         if self.is_calibrated() or time.time() - self.start_time < self.duration:
             return
-        segment = self.best_line or default_stopline_segment(width, height)
-        self.best_line = segment
-        self.line_abc = oriented_line_coefficients(segment, width, height)
+        if self.best_line is None:
+            return
+        self.line_abc = oriented_line_coefficients(self.best_line, width, height)
 
-    def current(self, width: int, height: int) -> tuple[tuple[int, int, int, int], tuple[float, float, float], bool]:
-        segment = self.best_line or default_stopline_segment(width, height)
-        line_abc = self.line_abc or oriented_line_coefficients(segment, width, height)
-        return segment, line_abc, self.is_calibrated()
+    def current(
+        self,
+        width: int,
+        height: int,
+    ) -> tuple[tuple[int, int, int, int] | None, tuple[float, float, float] | None, bool]:
+        if self.best_line is None:
+            return None, None, False
+        line_abc = self.line_abc or oriented_line_coefficients(self.best_line, width, height)
+        return self.best_line, line_abc, self.is_calibrated()
 
 
 def default_stopline_segment(width: int, height: int) -> tuple[int, int, int, int]:
@@ -1345,27 +1536,106 @@ def redlight_result_arrays(result) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return boxes, labels, confs
 
 
-def line_inside_stopline_mask(mask_u8: np.ndarray) -> tuple[int, int, int, int, float] | None:
+def stopline_boxes_overlap(box_a: np.ndarray, box_b: np.ndarray) -> bool:
+    ax1, ay1, ax2, ay2 = [float(v) for v in box_a]
+    bx1, by1, bx2, by2 = [float(v) for v in box_b]
+    return min(ax2, bx2) > max(ax1, bx1) and min(ay2, by2) > max(ay1, by1)
+
+
+def merge_stopline_detections(detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    used = [False] * len(detections)
+    for idx, detection in enumerate(detections):
+        if used[idx]:
+            continue
+        used[idx] = True
+        current_box = np.asarray(detection["box"], dtype=np.float32).copy()
+        current_conf = float(detection["conf"])
+        current_mask = np.asarray(detection["mask"], dtype=bool).copy()
+
+        changed = True
+        while changed:
+            changed = False
+            for other_idx, other in enumerate(detections):
+                if used[other_idx] or not stopline_boxes_overlap(current_box, np.asarray(other["box"], dtype=np.float32)):
+                    continue
+                other_box = np.asarray(other["box"], dtype=np.float32)
+                current_box = np.array(
+                    [
+                        min(current_box[0], other_box[0]),
+                        min(current_box[1], other_box[1]),
+                        max(current_box[2], other_box[2]),
+                        max(current_box[3], other_box[3]),
+                    ],
+                    dtype=np.float32,
+                )
+                current_conf = max(current_conf, float(other["conf"]))
+                current_mask = np.logical_or(current_mask, np.asarray(other["mask"], dtype=bool))
+                used[other_idx] = True
+                changed = True
+
+        merged.append({"box": current_box, "conf": current_conf, "mask": current_mask})
+    return merged
+
+
+def line_inside_stopline_mask(mask: np.ndarray) -> tuple[int, int, int, int, float] | None:
+    if mask is None:
+        return None
+    mask_u8 = (mask.astype(np.uint8) * 255) if mask.dtype != np.uint8 else mask.copy()
+    if cv2.countNonZero(mask_u8) == 0:
+        return None
+
     contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
 
     contour = max(contours, key=cv2.contourArea)
-    if cv2.contourArea(contour) < 20:
+    if cv2.contourArea(contour) < 10:
         return None
 
-    rect = cv2.minAreaRect(contour)
-    points = cv2.boxPoints(rect).astype(int)
-    edges = []
-    for idx in range(4):
-        p1 = points[idx]
-        p2 = points[(idx + 1) % 4]
-        length = float(np.linalg.norm(p2 - p1))
-        edges.append((length, p1, p2))
-    length, p1, p2 = max(edges, key=lambda item: item[0])
-    if length < 20:
+    (cx, cy), (rw, rh), angle = cv2.minAreaRect(contour)
+    theta = np.deg2rad(angle if rw >= rh else angle + 90.0)
+    direction = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)
+    direction_norm = float(np.linalg.norm(direction))
+    if direction_norm == 0:
         return None
-    return int(p1[0]), int(p1[1]), int(p2[0]), int(p2[1]), length
+    direction /= direction_norm
+
+    height, width = mask_u8.shape
+    center_x = int(round(cx))
+    center_y = int(round(cy))
+    if center_x < 0 or center_x >= width or center_y < 0 or center_y >= height or mask_u8[center_y, center_x] == 0:
+        ys, xs = np.where(mask_u8 > 0)
+        if len(xs) == 0:
+            return None
+        nearest = int(np.argmin((xs - cx) ** 2 + (ys - cy) ** 2))
+        cx = float(xs[nearest])
+        cy = float(ys[nearest])
+    else:
+        cx = float(center_x)
+        cy = float(center_y)
+
+    def walk(sign: int) -> tuple[float, float]:
+        x, y = cx, cy
+        last_x, last_y = x, y
+        max_steps = int(max(height, width) * 4)
+        step_size = 0.5
+        for _ in range(max_steps):
+            x += float(direction[0]) * step_size * sign
+            y += float(direction[1]) * step_size * sign
+            xi = int(round(x))
+            yi = int(round(y))
+            if xi < 0 or xi >= width or yi < 0 or yi >= height or mask_u8[yi, xi] == 0:
+                break
+            last_x, last_y = x, y
+        return last_x, last_y
+
+    p1x, p1y = walk(-1)
+    p2x, p2y = walk(1)
+    length = float(np.hypot(p2x - p1x, p2y - p1y))
+    if length < 2.0:
+        return None
+    return int(round(p1x)), int(round(p1y)), int(round(p2x)), int(round(p2y)), length
 
 
 def stopline_line_from_result(result, width: int, height: int) -> tuple[tuple[int, int, int, int, float] | None, np.ndarray | None]:
@@ -1375,8 +1645,10 @@ def stopline_line_from_result(result, width: int, height: int) -> tuple[tuple[in
 
     labels = result.boxes.cls.cpu().numpy().astype(int)
     confs = result.boxes.conf.cpu().numpy() if result.boxes.conf is not None else np.ones(len(labels), dtype=float)
+    boxes = result.boxes.xyxy.cpu().numpy()
     masks = result.masks.data.cpu().numpy()
     combined_mask = np.zeros((height, width), dtype=np.uint8)
+    stopline_detections: list[dict[str, Any]] = []
     best_line = None
     best_score = 0.0
 
@@ -1386,12 +1658,15 @@ def stopline_line_from_result(result, width: int, height: int) -> tuple[tuple[in
         mask = masks[idx]
         if mask.shape[:2] != (height, width):
             mask = cv2.resize(mask.astype(np.float32), (width, height), interpolation=cv2.INTER_NEAREST)
-        mask_u8 = (mask > 0.5).astype(np.uint8) * 255
-        combined_mask = cv2.max(combined_mask, mask_u8)
-        line_info = line_inside_stopline_mask(mask_u8)
+        mask_bool = mask > 0.5
+        combined_mask = cv2.max(combined_mask, mask_bool.astype(np.uint8) * 255)
+        stopline_detections.append({"box": boxes[idx].copy(), "conf": float(confs[idx]), "mask": mask_bool})
+
+    for detection in merge_stopline_detections(stopline_detections):
+        line_info = line_inside_stopline_mask(detection["mask"])
         if line_info is None:
             continue
-        score = float(line_info[4]) * float(confs[idx])
+        score = float(line_info[4]) * float(detection["conf"])
         if score > best_score:
             best_line = line_info
             best_score = score
@@ -1588,8 +1863,8 @@ def redlight_check_crossing(
     elif direction == "RIGHT" and not allowed["RIGHT"]:
         is_violation = True
     elif direction == "UNKNOWN":
-        has_green_override = light_state.right_green or light_state.left_green or light_state.straight_green
-        is_violation = light_state.has_any_red() and not has_green_override
+        if light_state.circle_red and not light_state.right_green and not light_state.left_green and not light_state.straight_green:
+            is_violation = True
 
     if is_violation:
         track_state.label = "VIOLATION"
@@ -1626,11 +1901,15 @@ def update_redlight_track_state(
         track_state.last_region = current_region
         return track_state.label, track_state.color
 
-    if is_priority_vehicle and (light_state.has_any_red() or light_state.has_any_yellow()):
-        track_state.label = "Priority"
-        track_state.color = REDLIGHT_COLOR_PRIORITY
-        track_state.last_region = current_region
-        return track_state.label, track_state.color
+    if is_priority_vehicle:
+        if light_state.has_any_red() or light_state.has_any_yellow():
+            track_state.label = "Priority"
+            track_state.color = REDLIGHT_COLOR_PRIORITY
+            track_state.last_region = current_region
+            return track_state.label, track_state.color
+        if track_state.label == "Priority":
+            track_state.label = "Safe"
+            track_state.color = REDLIGHT_COLOR_SAFE
 
     previous_region = track_state.last_region
     if previous_region == -1 and current_region == 0:
@@ -1640,10 +1919,12 @@ def update_redlight_track_state(
                 track_state.color = REDLIGHT_COLOR_WARNING
                 track_state.warned = True
                 track_state.last_warning_frame = frame_idx
+                track_state.last_event_frame = frame_idx
     elif previous_region in {-1, 0} and current_region == 1:
         if frame_idx - track_state.last_crossing_frame >= REDLIGHT_CROSSING_DEBOUNCE_FRAMES:
             redlight_check_crossing(track_state, light_state, ref_vector)
             track_state.last_crossing_frame = frame_idx
+            track_state.last_event_frame = frame_idx
     elif current_region == 0 and not light_state.has_any_red() and not light_state.has_any_yellow():
         if track_state.label == "WARNING":
             track_state.label = "Safe"
@@ -1671,46 +1952,16 @@ def dedup_redlight_tracks(
     return boxes[keep], labels[keep], confs[keep], track_ids[keep]
 
 
-def detect_stopline_from_result(result, width: int, height: int) -> tuple[tuple[int, int, int, int], tuple[float, float, float]]:
+def detect_stopline_from_result(
+    result,
+    width: int,
+    height: int,
+) -> tuple[tuple[int, int, int, int] | None, tuple[float, float, float] | None]:
     line_info, _ = stopline_line_from_result(result, width, height)
     if line_info is not None:
         best_segment = tuple(int(v) for v in line_info[:4])
         return best_segment, oriented_line_coefficients(best_segment, width, height)
-
-    stop_line_ids = {YOLO_CLASS_TO_ID[STOP_LINE_CLASS_NAME]}
-    best_line = None
-    best_area = 0.0
-    if result.boxes is not None and result.masks is not None:
-        labels = result.boxes.cls.cpu().numpy().astype(int)
-        masks = result.masks.data.cpu().numpy()
-        for idx, label in enumerate(labels):
-            if label not in stop_line_ids or idx >= len(masks):
-                continue
-            mask = masks[idx]
-            if mask.shape[:2] != (height, width):
-                mask = cv2.resize(mask.astype(np.float32), (width, height), interpolation=cv2.INTER_NEAREST)
-            mask_u8 = (mask > 0.5).astype(np.uint8) * 255
-            contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if not contours:
-                continue
-            contour = max(contours, key=cv2.contourArea)
-            area = cv2.contourArea(contour)
-            if area <= best_area:
-                continue
-            rect = cv2.minAreaRect(contour)
-            points = cv2.boxPoints(rect).astype(int)
-            distances = []
-            for i in range(4):
-                p1 = points[i]
-                p2 = points[(i + 1) % 4]
-                distances.append((np.linalg.norm(p2 - p1), p1, p2))
-            _, p1, p2 = max(distances, key=lambda item: item[0])
-            best_line = (int(p1[0]), int(p1[1]), int(p2[0]), int(p2[1]))
-            best_area = area
-
-    if best_line is None:
-        best_line = default_stopline_segment(width, height)
-    return best_line, oriented_line_coefficients(best_line, width, height)
+    return None, None
 
 
 def save_redlight_event_snapshot(
@@ -1767,12 +2018,18 @@ def mjpeg_chunk(frame_bgr: np.ndarray) -> bytes:
     return b"--frame\r\nContent-Type: image/jpeg\r\nCache-Control: no-store\r\n\r\n" + encoded.tobytes() + b"\r\n"
 
 
-def redlight_stream_frames(source_path: Path, confidence: float, iou: float):
+def redlight_stream_frames(source_path: Path, confidence: float, iou: float, model_key: str = "yolo"):
     cap = None
     try:
-        yield mjpeg_chunk(status_frame("Dang tai YOLOv26s-seg...", "Live stream se bat dau ngay khi model san sang."))
-        model = get_yolo_model()
-        static_model = get_yolo_model()
+        model_key = "rfdetr" if model_key == "rfdetr" else "yolo"
+        model_name = "RF-DETR Small" if model_key == "rfdetr" else "YOLOv26s-seg"
+        yield mjpeg_chunk(status_frame(f"Dang tai {model_name}...", "Live stream se bat dau ngay khi model san sang."))
+        if model_key == "rfdetr":
+            model = get_rfdetr_model()
+            static_model = model
+        else:
+            model = get_yolo_model()
+            static_model = get_yolo_model()
         cap = cv2.VideoCapture(str(source_path))
         if not cap.isOpened():
             yield mjpeg_chunk(status_frame("Khong mo duoc video dau vao.", source_path.name))
@@ -1785,9 +2042,14 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float):
         vehicle_ids = set(vehicle_classes)
         priority_vehicle_ids = redlight_priority_vehicle_ids()
         static_classes = redlight_static_class_ids()
+        static_class_names = RED_LIGHT_CLASS_NAMES | YELLOW_LIGHT_CLASS_NAMES | GREEN_LIGHT_CLASS_NAMES | {STOP_LINE_CLASS_NAME}
         calibrator = RedlightStoplineCalibrator()
         light_memory = RedlightLightMemory()
         track_states: dict[int, RedlightTrackState] = {}
+        simple_track_boxes: dict[int, np.ndarray] = {}
+        simple_track_labels: dict[int, int] = {}
+        simple_track_last_seen: dict[int, int] = {}
+        next_simple_track_id = 1
         violation_tracks: set[int] = set()
         warning_tracks: set[int] = set()
         priority_tracks: set[int] = set()
@@ -1808,16 +2070,28 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float):
                 break
 
             frame_count += 1
-            static_kwargs = {
-                "conf": max(0.12, confidence * 0.65),
-                "iou": iou,
-                "retina_masks": True,
-                "verbose": False,
-            }
-            if static_classes:
-                static_kwargs["classes"] = static_classes
-            static_result = static_model.predict(frame, **static_kwargs)[0]
-            static_boxes, static_labels, static_confs = redlight_result_arrays(static_result)
+            static_confidence = max(0.12, confidence * 0.65)
+            rfdetr_predictions = None
+            rfdetr_box_scale = 1.0
+            if model_key == "rfdetr":
+                rfdetr_predictions, rfdetr_box_scale = rfdetr_predict_frame(static_model, frame)
+                static_boxes, static_labels, static_confs = rfdetr_detection_arrays(
+                    rfdetr_predictions,
+                    static_confidence,
+                    static_class_names,
+                    rfdetr_box_scale,
+                )
+            else:
+                static_kwargs = {
+                    "conf": static_confidence,
+                    "iou": iou,
+                    "retina_masks": True,
+                    "verbose": False,
+                }
+                if static_classes:
+                    static_kwargs["classes"] = static_classes
+                static_result = static_model.predict(frame, **static_kwargs)[0]
+                static_boxes, static_labels, static_confs = redlight_result_arrays(static_result)
 
             current_time = time.time()
             detected_light_state = traffic_light_state_from_labels(static_labels)
@@ -1825,22 +2099,67 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float):
             light_state = light_memory.get(current_time)
             light_status = light_state.simple_state()
 
-            line_info, stopline_mask = stopline_line_from_result(static_result, width, height)
+            if model_key == "rfdetr":
+                line_info, stopline_mask = stopline_line_from_rfdetr_predictions(
+                    rfdetr_predictions,
+                    width,
+                    height,
+                    static_confidence,
+                )
+            else:
+                line_info, stopline_mask = stopline_line_from_result(static_result, width, height)
             calibrator.update_line(line_info)
             calibrator.maybe_finish(width, height)
             line_segment, line, line_locked = calibrator.current(width, height)
-            ref_vector = (line[0], line[1])
+            ref_vector = (line[0], line[1]) if line is not None else None
 
-            track_kwargs = {
-                "persist": True,
-                "conf": confidence,
-                "iou": iou,
-                "retina_masks": True,
-                "verbose": False,
-            }
-            if vehicle_classes:
-                track_kwargs["classes"] = vehicle_classes
-            track_result = model.track(frame, **track_kwargs)[0]
+            if model_key == "rfdetr":
+                vehicle_boxes, vehicle_labels, vehicle_confs = rfdetr_detection_arrays(
+                    rfdetr_predictions,
+                    confidence,
+                    VEHICLE_CLASS_NAMES,
+                    rfdetr_box_scale,
+                )
+                vehicle_track_ids, next_simple_track_id = assign_simple_track_ids(
+                    vehicle_boxes,
+                    vehicle_labels,
+                    simple_track_boxes,
+                    simple_track_labels,
+                    simple_track_last_seen,
+                    next_simple_track_id,
+                    frame_count,
+                )
+            else:
+                track_kwargs = {
+                    "persist": True,
+                    "conf": confidence,
+                    "iou": iou,
+                    "retina_masks": True,
+                    "verbose": False,
+                }
+                if vehicle_classes:
+                    track_kwargs["classes"] = vehicle_classes
+                track_result = model.track(frame, **track_kwargs)[0]
+                if track_result.boxes is None:
+                    vehicle_boxes = np.empty((0, 4), dtype=float)
+                    vehicle_labels = np.array([], dtype=int)
+                    vehicle_confs = np.array([], dtype=float)
+                    vehicle_track_ids = np.array([], dtype=int)
+                else:
+                    vehicle_boxes = track_result.boxes.xyxy.cpu().numpy()
+                    vehicle_labels = track_result.boxes.cls.cpu().numpy().astype(int)
+                    vehicle_track_ids = (
+                        track_result.boxes.id.cpu().numpy().astype(int)
+                        if track_result.boxes.id is not None
+                        else np.arange(len(vehicle_labels))
+                    )
+                    vehicle_confs = track_result.boxes.conf.cpu().numpy()
+                    vehicle_boxes, vehicle_labels, vehicle_confs, vehicle_track_ids = dedup_redlight_tracks(
+                        vehicle_boxes,
+                        vehicle_labels,
+                        vehicle_confs,
+                        vehicle_track_ids,
+                    )
 
             frame_vis = frame.copy()
             if not line_locked:
@@ -1852,24 +2171,22 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float):
                 "YELLOW": (0, 255, 255),
                 "GREEN": (0, 255, 0),
             }.get(light_status, (255, 255, 255))
-            cv2.line(frame_vis, (line_segment[0], line_segment[1]), (line_segment[2], line_segment[3]), line_color, 4)
-            draw_text_badge(
-                frame_vis,
-                "STOP LINE LOCKED" if line_locked else "CALIBRATING STOP LINE",
-                (line_segment[0], max(24, line_segment[1] - 10)),
-                line_color,
-                0.56,
-                2,
-            )
+            if line_segment is not None:
+                cv2.line(frame_vis, (line_segment[0], line_segment[1]), (line_segment[2], line_segment[3]), line_color, 4)
+                draw_text_badge(
+                    frame_vis,
+                    "STOP LINE LOCKED" if line_locked else "CALIBRATING STOP LINE",
+                    (line_segment[0], max(24, line_segment[1] - 10)),
+                    line_color,
+                    0.56,
+                    2,
+                )
+            else:
+                draw_text_badge(frame_vis, "SEARCHING STOP LINE", (24, 32), (0, 210, 255), 0.56, 2)
 
-            if track_result.boxes is not None:
-                boxes = track_result.boxes.xyxy.cpu().numpy()
-                labels = track_result.boxes.cls.cpu().numpy().astype(int)
-                ids = track_result.boxes.id.cpu().numpy().astype(int) if track_result.boxes.id is not None else np.arange(len(labels))
-                confs = track_result.boxes.conf.cpu().numpy()
-                boxes, labels, confs, ids = dedup_redlight_tracks(boxes, labels, confs, ids)
-                raw_vehicle_detections += int(len(labels))
-                for box, label, track_id, score in zip(boxes, labels, ids, confs):
+            if len(vehicle_labels) > 0:
+                raw_vehicle_detections += int(len(vehicle_labels))
+                for box, label, track_id, score in zip(vehicle_boxes, vehicle_labels, vehicle_track_ids, vehicle_confs):
                     name = class_name(int(label), "yolo")
                     if int(label) not in vehicle_ids:
                         continue
@@ -1877,17 +2194,23 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float):
                     px, py = bottom_center(box)
                     track_id = int(track_id)
                     state = track_states.setdefault(track_id, RedlightTrackState())
-                    distance = signed_distance(px, py, line)
-                    label_text, color = update_redlight_track_state(
-                        state,
-                        distance,
-                        light_state,
-                        frame_count,
-                        px,
-                        py,
-                        ref_vector,
-                        int(label) in priority_vehicle_ids,
-                    )
+                    if line is not None:
+                        distance = signed_distance(px, py, line)
+                        label_text, color = update_redlight_track_state(
+                            state,
+                            distance,
+                            light_state,
+                            frame_count,
+                            px,
+                            py,
+                            ref_vector,
+                            int(label) in priority_vehicle_ids,
+                        )
+                    else:
+                        state.positions.append((px, py))
+                        if len(state.positions) > REDLIGHT_MAX_TRACK_HISTORY:
+                            state.positions.pop(0)
+                        label_text, color = state.label, state.color
                     if label_text == "VIOLATION":
                         violation_tracks.add(track_id)
                     elif label_text == "WARNING":
@@ -1911,9 +2234,9 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float):
                         cv2.polylines(frame_vis, [points], False, color, 2)
 
             hud = [
-                "LIVE RED-LIGHT DETECTION",
+                f"LIVE RED-LIGHT DETECTION ({model_name})",
                 f"Light: {light_status}",
-                f"Stop line: {'LOCKED' if line_locked else 'CALIBRATING'}",
+                f"Stop line: {'LOCKED' if line_locked else 'CALIBRATING' if line_segment is not None else 'SEARCHING'}",
                 f"Vehicles: {len(track_states)}",
                 f"Violations: {len(violation_tracks)}",
                 f"Warnings: {len(warning_tracks)}",
@@ -1944,8 +2267,8 @@ def run_redlight_video(source_path: Path, confidence: float, iou: float) -> dict
     started = time.perf_counter()
     model = get_yolo_model()
     static_model = get_yolo_model()
-    visible_classes = configured_display_class_set("yolo")
-    visible_class_names = configured_display_class_names("yolo")
+    visible_classes = demo_public_class_set("yolo")
+    visible_class_names = demo_public_class_names("yolo")
     cap = cv2.VideoCapture(str(source_path))
     if not cap.isOpened():
         raise RuntimeError("Không mở được video đầu vào.")
@@ -1960,6 +2283,8 @@ def run_redlight_video(source_path: Path, confidence: float, iou: float) -> dict
         raise RuntimeError("Không tạo được video output.")
 
     vehicle_ids = {YOLO_CLASS_TO_ID[name] for name in VEHICLE_CLASS_NAMES if name in YOLO_CLASS_TO_ID}
+    vehicle_classes = redlight_vehicle_class_ids()
+    static_classes = redlight_static_class_ids()
     red_light_ids = {YOLO_CLASS_TO_ID[name] for name in RED_LIGHT_CLASS_NAMES if name in YOLO_CLASS_TO_ID}
     yellow_light_ids = {YOLO_CLASS_TO_ID[name] for name in YELLOW_LIGHT_CLASS_NAMES if name in YOLO_CLASS_TO_ID}
     line = None
@@ -1984,11 +2309,14 @@ def run_redlight_video(source_path: Path, confidence: float, iou: float) -> dict
             frame,
             conf=max(0.15, confidence * 0.7),
             iou=iou,
+            classes=static_classes,
             retina_masks=True,
             verbose=False,
         )[0]
         if line is None or frame_count <= int(fps * 3):
-            line_segment, line = detect_stopline_from_result(static_result, width, height)
+            detected_segment, detected_line = detect_stopline_from_result(static_result, width, height)
+            if detected_segment is not None and detected_line is not None:
+                line_segment, line = detected_segment, detected_line
 
         labels_static = static_result.boxes.cls.cpu().numpy().astype(int) if static_result.boxes is not None else np.array([], dtype=int)
         is_red = any(label in red_light_ids for label in labels_static)
@@ -2001,6 +2329,7 @@ def run_redlight_video(source_path: Path, confidence: float, iou: float) -> dict
             persist=True,
             conf=confidence,
             iou=iou,
+            classes=vehicle_classes,
             retina_masks=True,
             verbose=False,
         )[0]
@@ -2032,30 +2361,33 @@ def run_redlight_video(source_path: Path, confidence: float, iou: float) -> dict
                 x1, y1, x2, y2 = [int(v) for v in box]
                 px = (x1 + x2) / 2
                 py = y2
-                distance = signed_distance(px, py, line) if line else 0
-                region = -1 if distance < -12 else 1 if distance > 12 else 0
-                previous = track_regions.get(int(track_id))
-                if previous in (-1, 0) and region == 1:
-                    if is_red:
-                        violation_tracks.add(int(track_id))
-                        if int(track_id) not in captured_violation_tracks:
-                            violation_events.append(
-                                save_redlight_event_snapshot(
-                                    frame,
-                                    box,
-                                    line_segment,
-                                    int(track_id),
-                                    name,
-                                    float(score),
-                                    frame_count,
-                                    fps,
-                                    source_path,
+                if line is not None:
+                    distance = signed_distance(px, py, line)
+                    region = -1 if distance < -12 else 1 if distance > 12 else 0
+                    previous = track_regions.get(int(track_id))
+                    if previous in (-1, 0) and region == 1:
+                        if is_red:
+                            violation_tracks.add(int(track_id))
+                            if int(track_id) not in captured_violation_tracks:
+                                violation_events.append(
+                                    save_redlight_event_snapshot(
+                                        frame,
+                                        box,
+                                        line_segment,
+                                        int(track_id),
+                                        name,
+                                        float(score),
+                                        frame_count,
+                                        fps,
+                                        source_path,
+                                    )
                                 )
-                            )
-                            captured_violation_tracks.add(int(track_id))
-                    elif is_yellow:
-                        warning_tracks.add(int(track_id))
-                track_regions[int(track_id)] = region
+                                captured_violation_tracks.add(int(track_id))
+                        elif is_yellow:
+                            warning_tracks.add(int(track_id))
+                    track_regions[int(track_id)] = region
+                else:
+                    track_regions.setdefault(int(track_id), 0)
 
                 if int(track_id) in violation_tracks:
                     color = (0, 0, 255)
@@ -2204,35 +2536,44 @@ def api_redlight_start():
         cleanup_redlight_stream_jobs()
         confidence = float(request.form.get("confidence", 0.5))
         iou = float(request.form.get("iou", 0.5))
+        model_key = request.form.get("model", "yolo")
+        if model_key not in {"yolo", "rfdetr"}:
+            return jsonify({"success": False, "error": "Model không hợp lệ cho tác vụ vượt đèn đỏ.", "status": model_status()}), 400
+        status_snapshot = model_status()
+        if not status_snapshot[model_key]["available"]:
+            return jsonify({"success": False, "error": f"{status_snapshot[model_key]['name']} chưa sẵn sàng.", "status": status_snapshot}), 400
         file_storage = request.files.get("file")
         if file_storage is None:
-            return jsonify({"success": False, "error": "Vui lòng upload video cho tác vụ vượt đèn đỏ.", "status": model_status()}), 400
+            return jsonify({"success": False, "error": "Vui lòng upload video cho tác vụ vượt đèn đỏ.", "status": status_snapshot}), 400
 
         uploaded_file_metadata = upload_debug(file_storage)
         source_path = save_upload(file_storage)
         if not is_video(source_path):
-            return jsonify({"success": False, "error": "Tác vụ vượt đèn đỏ cần input video.", "status": model_status()}), 400
+            return jsonify({"success": False, "error": "Tác vụ vượt đèn đỏ cần input video.", "status": status_snapshot}), 400
 
         job_id = uuid.uuid4().hex[:12]
         _redlight_stream_jobs[job_id] = {
             "source_path": source_path,
             "confidence": confidence,
             "iou": iou,
+            "model_key": model_key,
             "created_at": time.time(),
         }
         stream_url = url_for("api_redlight_stream", job_id=job_id)
+        model_name = status_snapshot[model_key]["name"]
         return jsonify(
             {
                 "success": True,
                 "job_id": job_id,
-                "model": "Red Light Violation Live",
-                "model_key": "redlight",
+                "model": f"{model_name} Red Light Violation Live",
+                "model_key": model_key,
                 "media_type": "video",
                 "original_url": relative_static_url(source_path),
                 "stream_url": stream_url,
-                "status": model_status(),
+                "status": status_snapshot,
                 "debug": {
                     "request": {
+                        "model_key": model_key,
                         "uploaded_file": uploaded_file_metadata,
                         "source_media": media_debug(source_path),
                         "confidence": confidence,
@@ -2241,6 +2582,7 @@ def api_redlight_start():
                     "stream": {
                         "job_id": job_id,
                         "url": stream_url,
+                        "model": model_name,
                     },
                 },
             }
@@ -2271,7 +2613,12 @@ def api_redlight_stream(job_id: str):
     if job is None:
         return Response(mjpeg_chunk(status_frame("Khong tim thay live job.", job_id)), mimetype="multipart/x-mixed-replace; boundary=frame")
     return Response(
-        redlight_stream_frames(job["source_path"], float(job["confidence"]), float(job["iou"])),
+        redlight_stream_frames(
+            job["source_path"],
+            float(job["confidence"]),
+            float(job["iou"]),
+            str(job.get("model_key", "yolo")),
+        ),
         mimetype="multipart/x-mixed-replace; boundary=frame",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
