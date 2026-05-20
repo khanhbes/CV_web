@@ -21,6 +21,7 @@ from werkzeug.utils import secure_filename
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 TEST_IMAGE_DIR = STATIC_DIR / "test_images"
+TEST_VIDEO_DIR = STATIC_DIR / "test_videos"
 UPLOAD_DIR = STATIC_DIR / "uploads"
 RESULT_DIR = STATIC_DIR / "results"
 MODEL_DIR = BASE_DIR / "models"
@@ -30,6 +31,7 @@ CLASS_DISPLAY_CONFIG_PATH = BASE_DIR / "class_display_config.json"
 YOLO_MODEL_PATH = MODEL_DIR / "yolov26s_seg.pt"
 RF_DETR_MODEL_PATH = MODEL_DIR / "RF-DETR_Small.pt"
 SAMPLE_IMAGE_PATH = TEST_IMAGE_DIR / "test_image.jpg"
+SAMPLE_VIDEO_PATH = TEST_VIDEO_DIR / "test_2.mp4"
 
 RF_DETR_FINAL_METRICS = {
     "epoch": 150,
@@ -154,8 +156,13 @@ GREEN_LIGHT_CLASS_NAMES = {
 }
 STOP_LINE_CLASS_NAME = "stop_line"
 PRIORITY_VEHICLE_CLASS_NAMES = {"ambulance", "fire_truck", "police_car"}
+STOP_LINE_QUALITATIVE_CONFIDENCE = 0.20
 
 REDLIGHT_STOPLINE_CALIBRATION_SECONDS = 5.0
+REDLIGHT_STOPLINE_YOLO_CONFIDENCE = 0.03
+REDLIGHT_STOPLINE_RFDETR_CONFIDENCE = 0.03
+REDLIGHT_STOPLINE_MAX_ANGLE_DEG = 30.0
+REDLIGHT_STOPLINE_MIN_LENGTH_RATIO = 0.012
 REDLIGHT_LIGHT_MEMORY_SECONDS = 1.5
 REDLIGHT_TOUCH_DIST = 15.0
 REDLIGHT_WARNING_DEBOUNCE_FRAMES = 8
@@ -174,7 +181,7 @@ REDLIGHT_COLOR_PRIORITY = (255, 150, 0)
 
 VIOLATION_KEYWORDS = ("red_light_violation",)
 
-for folder in (TEST_IMAGE_DIR, UPLOAD_DIR, RESULT_DIR, MODEL_DIR):
+for folder in (TEST_IMAGE_DIR, TEST_VIDEO_DIR, UPLOAD_DIR, RESULT_DIR, MODEL_DIR):
     folder.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -184,6 +191,7 @@ _yolo_model = None
 _rfdetr_model = None
 _sample_compare_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
 _redlight_stream_jobs: dict[str, dict[str, Any]] = {}
+_video_stream_jobs: dict[str, dict[str, Any]] = {}
 
 
 @app.after_request
@@ -214,6 +222,17 @@ def is_video(path: Path) -> bool:
 
 def relative_static_url(path: Path) -> str:
     return url_for("static", filename=path.relative_to(STATIC_DIR).as_posix())
+
+
+def sample_source_path(task: str, sample_type: str | None = None) -> Path:
+    sample_type = (sample_type or "").strip().lower()
+    if sample_type == "video" or task in {"video", "redlight"}:
+        if not SAMPLE_VIDEO_PATH.exists():
+            raise RuntimeError("Không tìm thấy video sample static/test_videos/test_2.mp4.")
+        return SAMPLE_VIDEO_PATH
+    if not SAMPLE_IMAGE_PATH.exists():
+        raise RuntimeError("Không tìm thấy ảnh sample static/test_images/test_image.jpg.")
+    return SAMPLE_IMAGE_PATH
 
 
 def save_upload(file_storage) -> Path:
@@ -316,6 +335,17 @@ def demo_public_class_names(model_key: str) -> list[str]:
 
 def demo_public_class_set(model_key: str) -> set[str]:
     return set(demo_public_class_names(model_key))
+
+
+def display_class_names_for_demo(model_key: str, include_stopline: bool = False) -> list[str]:
+    names = demo_public_class_names(model_key)
+    if include_stopline and STOP_LINE_CLASS_NAME in class_names_for_model(model_key) and STOP_LINE_CLASS_NAME not in names:
+        names = [*names, STOP_LINE_CLASS_NAME]
+    return names
+
+
+def display_class_set_for_demo(model_key: str, include_stopline: bool = False) -> set[str]:
+    return set(display_class_names_for_demo(model_key, include_stopline))
 
 
 def yolo_class_ids_for_names(names: set[str] | list[str] | tuple[str, ...]) -> list[int]:
@@ -534,8 +564,14 @@ def box_iou(box_a: np.ndarray, box_b: np.ndarray) -> float:
     return 0.0 if union <= 0 else intersection / union
 
 
-def rfdetr_display_threshold(name: str, requested_confidence: float) -> float:
+def qualitative_display_threshold(name: str, requested_confidence: float, include_stopline: bool = False) -> float:
+    if include_stopline and name == STOP_LINE_CLASS_NAME:
+        return min(requested_confidence, STOP_LINE_QUALITATIVE_CONFIDENCE)
     return requested_confidence
+
+
+def rfdetr_display_threshold(name: str, requested_confidence: float, include_stopline: bool = False) -> float:
+    return qualitative_display_threshold(name, requested_confidence, include_stopline)
 
 
 def is_suppressed_rfdetr_vehicle(box: np.ndarray, suppressors: list[tuple[np.ndarray, str, float]]) -> bool:
@@ -785,14 +821,22 @@ def load_quantitative_payload() -> dict[str, Any]:
     }
 
 
-def predict_yolo(source_path: Path, confidence: float, iou: float, show_labels: bool = True, show_conf: bool = True) -> dict[str, Any]:
+def predict_yolo(
+    source_path: Path,
+    confidence: float,
+    iou: float,
+    show_labels: bool = True,
+    show_conf: bool = True,
+    include_stopline: bool = False,
+) -> dict[str, Any]:
     started = time.perf_counter()
     model = get_yolo_model()
-    visible_classes = demo_public_class_set("yolo")
-    visible_class_names = demo_public_class_names("yolo")
+    visible_classes = display_class_set_for_demo("yolo", include_stopline)
+    visible_class_names = display_class_names_for_demo("yolo", include_stopline)
+    inference_confidence = qualitative_display_threshold(STOP_LINE_CLASS_NAME, confidence, include_stopline)
     result = model.predict(
         str(source_path),
-        conf=confidence,
+        conf=inference_confidence,
         iou=iou,
         classes=yolo_class_ids_for_names(visible_classes),
         retina_masks=True,
@@ -822,6 +866,8 @@ def predict_yolo(source_path: Path, confidence: float, iou: float, show_labels: 
         for idx, (box, score, label) in enumerate(zip(boxes, scores, labels)):
             name = model.names.get(int(label), class_name(int(label), "yolo")) if hasattr(model, "names") else class_name(int(label), "yolo")
             if name not in visible_classes:
+                continue
+            if float(score) < qualitative_display_threshold(name, confidence, include_stopline):
                 continue
             color = palette[idx % len(palette)]
             if masks is not None and idx < len(masks):
@@ -859,10 +905,12 @@ def predict_yolo(source_path: Path, confidence: float, iou: float, show_labels: 
                 "model_key": "yolo",
                 "task": "image",
                 "confidence_threshold": confidence,
+                "model_confidence_threshold": inference_confidence,
                 "iou_threshold": iou,
                 "inference_class_count": len(YOLO_INFERENCE_CLASS_IDS),
                 "display_class_count": len(visible_class_names),
                 "display_classes": visible_class_names,
+                "include_stopline": include_stopline,
                 "raw_box_count": raw_box_count,
                 "raw_mask_count": raw_mask_count,
                 "returned_detection_count": len(detections),
@@ -966,8 +1014,9 @@ def draw_rfdetr_output(
     requested_confidence: float,
     show_labels: bool = True,
     show_conf: bool = True,
+    include_stopline: bool = False,
 ) -> list[dict[str, Any]]:
-    visible_classes = demo_public_class_set("rfdetr")
+    visible_classes = display_class_set_for_demo("rfdetr", include_stopline)
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     canvas = Image.fromarray(image_rgb).convert("RGBA")
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
@@ -991,7 +1040,7 @@ def draw_rfdetr_output(
         name = rfdetr_prediction_name(predictions, idx, int(label))
         if name not in visible_classes:
             continue
-        if float(score) < rfdetr_display_threshold(name, requested_confidence):
+        if float(score) < rfdetr_display_threshold(name, requested_confidence, include_stopline):
             continue
         color = palette[idx % len(palette)]
         if masks is not None and idx < len(masks):
@@ -1020,10 +1069,16 @@ def draw_rfdetr_output(
     return detections
 
 
-def predict_rfdetr(source_path: Path, confidence: float, show_labels: bool = True, show_conf: bool = True) -> dict[str, Any]:
+def predict_rfdetr(
+    source_path: Path,
+    confidence: float,
+    show_labels: bool = True,
+    show_conf: bool = True,
+    include_stopline: bool = False,
+) -> dict[str, Any]:
     started = time.perf_counter()
     model = get_rfdetr_model()
-    visible_class_names = demo_public_class_names("rfdetr")
+    visible_class_names = display_class_names_for_demo("rfdetr", include_stopline)
     image_bgr = cv2.imread(str(source_path))
     if image_bgr is None:
         raise RuntimeError("Không đọc được ảnh đầu vào.")
@@ -1036,7 +1091,7 @@ def predict_rfdetr(source_path: Path, confidence: float, show_labels: bool = Tru
     raw_masks = getattr(predictions, "mask", None)
     raw_class_ids = getattr(predictions, "class_id", None)
     output_path = make_result_path("rfdetr", source_path)
-    detections = draw_rfdetr_output(image_bgr, predictions, output_path, confidence, show_labels, show_conf)
+    detections = draw_rfdetr_output(image_bgr, predictions, output_path, confidence, show_labels, show_conf, include_stopline)
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     return {
         "model": "RF-DETR Small",
@@ -1055,6 +1110,7 @@ def predict_rfdetr(source_path: Path, confidence: float, show_labels: bool = Tru
                 "inference_class_count": len(RF_DETR_INFERENCE_CLASS_IDS),
                 "display_class_count": len(visible_class_names),
                 "display_classes": visible_class_names,
+                "include_stopline": include_stopline,
                 "raw_box_count": int(len(raw_boxes)) if raw_boxes is not None else 0,
                 "raw_mask_count": int(len(raw_masks)) if raw_masks is not None else 0,
                 "raw_class_ids": np.asarray(raw_class_ids, dtype=int).tolist() if raw_class_ids is not None else [],
@@ -1131,6 +1187,7 @@ def stopline_line_from_rfdetr_predictions(
     width: int,
     height: int,
     min_confidence: float,
+    box_scale: float = 1.0,
 ) -> tuple[tuple[int, int, int, int, float] | None, np.ndarray | None]:
     masks_raw = getattr(predictions, "mask", None)
     if masks_raw is None:
@@ -1145,9 +1202,9 @@ def stopline_line_from_rfdetr_predictions(
     classes_raw = getattr(predictions, "class_id", None)
     scores = np.ones(len(masks), dtype=float) if scores_raw is None else np.asarray(scores_raw, dtype=float)
     classes = np.full(len(masks), -1, dtype=int) if classes_raw is None else np.asarray(classes_raw, dtype=int)
-    combined_mask = np.zeros((height, width), dtype=np.uint8)
     stopline_detections: list[dict[str, Any]] = []
     best_line = None
+    best_mask = None
     best_score = 0.0
 
     for idx, (mask, score, label) in enumerate(zip(masks, scores, classes)):
@@ -1159,27 +1216,27 @@ def stopline_line_from_rfdetr_predictions(
         if mask_array.shape[:2] != (height, width):
             mask_array = cv2.resize(mask_array, (width, height), interpolation=cv2.INTER_NEAREST)
         mask_bool = mask_array > 0.5
-        combined_mask = cv2.max(combined_mask, mask_bool.astype(np.uint8) * 255)
         stopline_detections.append(
             {
-                "box": boxes[idx].copy() if idx < len(boxes) else np.array([0, 0, width, height], dtype=np.float32),
+                "box": (boxes[idx].copy() * float(box_scale)) if idx < len(boxes) else np.array([0, 0, width, height], dtype=np.float32),
                 "conf": float(score),
                 "mask": mask_bool,
             }
         )
 
-    for detection in merge_stopline_detections(stopline_detections):
+    for detection in stopline_detections:
         line_info = line_inside_stopline_mask(detection["mask"])
         if line_info is None:
+            continue
+        if not plausible_stopline_line(line_info, width):
             continue
         score_value = float(line_info[4]) * float(detection["conf"])
         if score_value > best_score:
             best_line = line_info
+            best_mask = np.asarray(detection["mask"], dtype=np.uint8) * 255
             best_score = score_value
 
-    if not combined_mask.any():
-        combined_mask = None
-    return best_line, combined_mask
+    return best_line, best_mask
 
 
 def assign_simple_track_ids(
@@ -1578,27 +1635,53 @@ def merge_stopline_detections(detections: list[dict[str, Any]]) -> list[dict[str
     return merged
 
 
+def horizontal_line_from_stopline_mask(mask_u8: np.ndarray) -> tuple[int, int, int, int, float] | None:
+    ys, xs = np.where(mask_u8 > 0)
+    if len(xs) < 8:
+        return None
+
+    x1 = float(np.percentile(xs, 2))
+    x2 = float(np.percentile(xs, 98))
+    y1 = float(np.percentile(ys, 2))
+    y2 = float(np.percentile(ys, 98))
+    x_span = x2 - x1
+    y_span = y2 - y1
+    if x_span < max(20.0, mask_u8.shape[1] * REDLIGHT_STOPLINE_MIN_LENGTH_RATIO):
+        return None
+    # A true stopline is a thin horizontal band. This rejects false stop_line
+    # masks that RF-DETR sometimes places on lane dividers or crosswalk spans.
+    if y_span > max(28.0, x_span * 0.16):
+        return None
+
+    band_y = float(np.median(ys))
+    left = int(round(x1))
+    right = int(round(x2))
+    y = int(round(band_y))
+    return left, y, right, y, float(max(0.0, right - left))
+
+
 def line_inside_stopline_mask(mask: np.ndarray) -> tuple[int, int, int, int, float] | None:
     if mask is None:
         return None
     mask_u8 = (mask.astype(np.uint8) * 255) if mask.dtype != np.uint8 else mask.copy()
     if cv2.countNonZero(mask_u8) == 0:
         return None
+    horizontal_line = horizontal_line_from_stopline_mask(mask_u8)
 
     contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        return None
+        return horizontal_line
 
     contour = max(contours, key=cv2.contourArea)
     if cv2.contourArea(contour) < 10:
-        return None
+        return horizontal_line
 
     (cx, cy), (rw, rh), angle = cv2.minAreaRect(contour)
     theta = np.deg2rad(angle if rw >= rh else angle + 90.0)
     direction = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)
     direction_norm = float(np.linalg.norm(direction))
     if direction_norm == 0:
-        return None
+        return horizontal_line
     direction /= direction_norm
 
     height, width = mask_u8.shape
@@ -1607,7 +1690,7 @@ def line_inside_stopline_mask(mask: np.ndarray) -> tuple[int, int, int, int, flo
     if center_x < 0 or center_x >= width or center_y < 0 or center_y >= height or mask_u8[center_y, center_x] == 0:
         ys, xs = np.where(mask_u8 > 0)
         if len(xs) == 0:
-            return None
+            return horizontal_line
         nearest = int(np.argmin((xs - cx) ** 2 + (ys - cy) ** 2))
         cx = float(xs[nearest])
         cy = float(ys[nearest])
@@ -1634,8 +1717,83 @@ def line_inside_stopline_mask(mask: np.ndarray) -> tuple[int, int, int, int, flo
     p2x, p2y = walk(1)
     length = float(np.hypot(p2x - p1x, p2y - p1y))
     if length < 2.0:
+        return horizontal_line
+    contour_line = int(round(p1x)), int(round(p1y)), int(round(p2x)), int(round(p2y)), length
+    if horizontal_line is not None and horizontal_line[4] > contour_line[4]:
+        return horizontal_line
+    return contour_line
+
+
+def plausible_stopline_line(line_info: tuple[int, int, int, int, float], width: int) -> bool:
+    x1, y1, x2, y2, length = line_info
+    if float(length) < max(20.0, float(width) * REDLIGHT_STOPLINE_MIN_LENGTH_RATIO):
+        return False
+    dx = float(x2 - x1)
+    dy = float(y2 - y1)
+    if abs(dx) < 1e-6:
+        return False
+    angle = abs(float(np.degrees(np.arctan2(dy, dx))))
+    angle = min(angle, 180.0 - angle)
+    return angle <= REDLIGHT_STOPLINE_MAX_ANGLE_DEG
+
+
+def expand_stopline_line_with_frame(
+    frame_bgr: np.ndarray,
+    line_info: tuple[int, int, int, int, float] | None,
+) -> tuple[int, int, int, int, float] | None:
+    if line_info is None:
         return None
-    return int(round(p1x)), int(round(p1y)), int(round(p2x)), int(round(p2y)), length
+
+    height, width = frame_bgr.shape[:2]
+    x1, y1, x2, y2, length = line_info
+    y_center = int(round((float(y1) + float(y2)) / 2.0))
+    y0 = max(0, y_center - 12)
+    y3 = min(height, y_center + 13)
+    if y3 <= y0:
+        return line_info
+
+    band = frame_bgr[y0:y3]
+    hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
+    white_mask = ((gray > 145) & (hsv[:, :, 1] < 95)).astype(np.uint8) * 255
+    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, np.ones((2, 3), dtype=np.uint8))
+    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, np.ones((3, 51), dtype=np.uint8))
+    active_columns = (white_mask > 0).sum(axis=0) >= 3
+    active_row = active_columns.astype(np.uint8)[None, :] * 255
+    active_row = cv2.morphologyEx(active_row, cv2.MORPH_CLOSE, np.ones((1, 81), dtype=np.uint8))[0] > 0
+
+    model_left = int(max(0, min(x1, x2)))
+    model_right = int(min(width - 1, max(x1, x2)))
+    model_center = (model_left + model_right) // 2
+    candidates: list[tuple[int, int, int, int]] = []
+    in_segment = False
+    for idx, is_active in enumerate(active_row):
+        if is_active and not in_segment:
+            start = idx
+            in_segment = True
+        if in_segment and (not is_active or idx == len(active_row) - 1):
+            end = idx - 1 if not is_active else idx
+            in_segment = False
+            segment_length = end - start + 1
+            if segment_length < 30:
+                continue
+            overlap = max(0, min(end, model_right + 120) - max(start, model_left - 120) + 1)
+            contains_center = start <= model_center <= end
+            if overlap > 0 or contains_center:
+                candidates.append((start, end, segment_length, overlap))
+
+    if not candidates:
+        return line_info
+
+    best_start, best_end, best_length, _ = max(candidates, key=lambda item: (item[3], item[2]))
+    if best_length <= float(length) * 1.05:
+        return line_info
+
+    segment_mask = white_mask[:, best_start : best_end + 1] > 0
+    ys, _ = np.where(segment_mask)
+    expanded_y = y_center if len(ys) == 0 else int(round(y0 + float(np.median(ys))))
+    expanded = (int(best_start), expanded_y, int(best_end), expanded_y, float(best_end - best_start))
+    return expanded if plausible_stopline_line(expanded, width) else line_info
 
 
 def stopline_line_from_result(result, width: int, height: int) -> tuple[tuple[int, int, int, int, float] | None, np.ndarray | None]:
@@ -1647,9 +1805,9 @@ def stopline_line_from_result(result, width: int, height: int) -> tuple[tuple[in
     confs = result.boxes.conf.cpu().numpy() if result.boxes.conf is not None else np.ones(len(labels), dtype=float)
     boxes = result.boxes.xyxy.cpu().numpy()
     masks = result.masks.data.cpu().numpy()
-    combined_mask = np.zeros((height, width), dtype=np.uint8)
     stopline_detections: list[dict[str, Any]] = []
     best_line = None
+    best_mask = None
     best_score = 0.0
 
     for idx, label in enumerate(labels):
@@ -1659,21 +1817,21 @@ def stopline_line_from_result(result, width: int, height: int) -> tuple[tuple[in
         if mask.shape[:2] != (height, width):
             mask = cv2.resize(mask.astype(np.float32), (width, height), interpolation=cv2.INTER_NEAREST)
         mask_bool = mask > 0.5
-        combined_mask = cv2.max(combined_mask, mask_bool.astype(np.uint8) * 255)
         stopline_detections.append({"box": boxes[idx].copy(), "conf": float(confs[idx]), "mask": mask_bool})
 
-    for detection in merge_stopline_detections(stopline_detections):
+    for detection in stopline_detections:
         line_info = line_inside_stopline_mask(detection["mask"])
         if line_info is None:
+            continue
+        if not plausible_stopline_line(line_info, width):
             continue
         score = float(line_info[4]) * float(detection["conf"])
         if score > best_score:
             best_line = line_info
+            best_mask = np.asarray(detection["mask"], dtype=np.uint8) * 255
             best_score = score
 
-    if not combined_mask.any():
-        combined_mask = None
-    return best_line, combined_mask
+    return best_line, best_mask
 
 
 def traffic_light_state_from_labels(labels: np.ndarray) -> RedlightTrafficLightState:
@@ -2018,11 +2176,268 @@ def mjpeg_chunk(frame_bgr: np.ndarray) -> bytes:
     return b"--frame\r\nContent-Type: image/jpeg\r\nCache-Control: no-store\r\n\r\n" + encoded.tobytes() + b"\r\n"
 
 
-def redlight_stream_frames(source_path: Path, confidence: float, iou: float, model_key: str = "yolo"):
+def redlight_initial_metrics(source_media: dict[str, Any] | None = None) -> dict[str, Any]:
+    source_media = source_media or {}
+    return {
+        "fps": round(float(source_media.get("fps", 0) or 0), 1),
+        "vehicle_count": 0,
+        "violations": 0,
+        "warnings": 0,
+        "priority": 0,
+        "frame": 0,
+        "light_state": "UNKNOWN",
+        "stopline_state": "STARTING",
+        "stream_state": "STARTING",
+        "source_fps": round(float(source_media.get("fps", 0) or 0), 1),
+        "updated_at": time.time(),
+    }
+
+
+def update_redlight_job_metrics(job_id: str | None, **metrics: Any) -> None:
+    if not job_id:
+        return
+    job = _redlight_stream_jobs.get(job_id)
+    if job is None:
+        return
+    current = dict(job.get("metrics") or {})
+    current.update(metrics)
+    current["updated_at"] = time.time()
+    job["metrics"] = current
+
+
+def yolo_video_stream_frames(
+    source_path: Path,
+    confidence: float,
+    iou: float,
+    show_labels: bool = True,
+    show_conf: bool = True,
+):
+    cap = None
+    try:
+        yield mjpeg_chunk(status_frame("Dang tai YOLOv26s-seg...", "Video detection live se bat dau ngay khi model san sang."))
+        model = get_yolo_model()
+        visible_classes = display_class_set_for_demo("yolo")
+        visible_class_ids = yolo_class_ids_for_names(visible_classes)
+        cap = cv2.VideoCapture(str(source_path))
+        if not cap.isOpened():
+            yield mjpeg_chunk(status_frame("Khong mo duoc video dau vao.", source_path.name))
+            return
+
+        source_fps = float(cap.get(cv2.CAP_PROP_FPS) or 25)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 960)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 540)
+        frame_count = 0
+        displayed_total = 0
+        last_tick = time.perf_counter()
+
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                yield mjpeg_chunk(
+                    status_frame(
+                        "Da xu ly xong video.",
+                        f"Frames: {frame_count} | Detections: {displayed_total}",
+                        max(width, 960),
+                        max(height, 540),
+                    )
+                )
+                break
+
+            frame_count += 1
+            result = model.predict(
+                frame,
+                conf=confidence,
+                iou=iou,
+                classes=visible_class_ids,
+                retina_masks=True,
+                verbose=False,
+            )[0]
+            frame_vis, displayed = draw_yolo_result_on_frame(
+                frame,
+                result,
+                model,
+                show_labels=show_labels,
+                show_conf=show_conf,
+                display_classes=visible_classes,
+            )
+            displayed_total += len(displayed)
+            now = time.perf_counter()
+            live_fps = 1.0 / max(now - last_tick, 1e-6)
+            last_tick = now
+            vehicle_count = sum(1 for item in displayed if item["class"] in VEHICLE_CLASS_NAMES)
+
+            cv2.rectangle(frame_vis, (12, 12), (360, 112), (8, 13, 24), -1)
+            cv2.putText(frame_vis, "LIVE VIDEO DETECTION", (28, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (96, 165, 250), 2)
+            cv2.putText(
+                frame_vis,
+                f"FPS {live_fps:.1f}/{source_fps:.1f} | Xe {vehicle_count} | Obj {len(displayed)}",
+                (28, 72),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (226, 232, 240),
+                1,
+            )
+            cv2.putText(frame_vis, f"Frame {frame_count}", (28, 98), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (148, 163, 184), 1)
+            yield mjpeg_chunk(frame_vis)
+    except GeneratorExit:
+        raise
+    except Exception as exc:
+        yield mjpeg_chunk(status_frame("Loi video live detection.", str(exc)[:100]))
+    finally:
+        if cap is not None:
+            cap.release()
+
+
+def draw_rfdetr_predictions_on_frame(
+    frame_bgr: np.ndarray,
+    predictions,
+    requested_confidence: float,
+    show_labels: bool = True,
+    show_conf: bool = True,
+    box_scale: float = 1.0,
+    display_classes: set[str] | None = None,
+) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    frame_vis = frame_bgr.copy()
+    overlay = frame_vis.copy()
+    height, width = frame_vis.shape[:2]
+    detections: list[dict[str, Any]] = []
+
+    boxes = np.asarray(getattr(predictions, "xyxy", []), dtype=float)
+    if boxes.size == 0:
+        boxes = np.empty((0, 4), dtype=float)
+    elif boxes.ndim == 1:
+        boxes = boxes.reshape(1, 4)
+    scores_raw = getattr(predictions, "confidence", None)
+    classes_raw = getattr(predictions, "class_id", None)
+    scores = np.ones(len(boxes), dtype=float) if scores_raw is None else np.asarray(scores_raw, dtype=float)
+    classes = np.full(len(boxes), -1, dtype=int) if classes_raw is None else np.asarray(classes_raw, dtype=int)
+    masks_raw = getattr(predictions, "mask", None)
+    masks = None if masks_raw is None else np.asarray(masks_raw)
+    palette = [(168, 85, 247), (244, 114, 182), (14, 165, 233), (34, 197, 94), (250, 204, 21)]
+
+    for idx, (box, score, label) in enumerate(zip(boxes, scores, classes)):
+        name = rfdetr_prediction_name(predictions, idx, int(label))
+        if display_classes is not None and name not in display_classes:
+            continue
+        if float(score) < rfdetr_display_threshold(name, requested_confidence):
+            continue
+        color = palette[idx % len(palette)]
+        if masks is not None and idx < len(masks):
+            mask_array = masks[idx].astype(np.float32)
+            if mask_array.shape[:2] != (height, width):
+                mask_array = cv2.resize(mask_array, (width, height), interpolation=cv2.INTER_NEAREST)
+            overlay[mask_array > 0.5] = color
+
+        scaled_box = np.asarray(box, dtype=float) * float(box_scale)
+        x1, y1, x2, y2 = [int(round(value)) for value in scaled_box]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(width - 1, x2), min(height - 1, y2)
+        cv2.rectangle(frame_vis, (x1, y1), (x2, y2), color, 2)
+        text = label_text(name, float(score), show_labels, show_conf)
+        if text:
+            (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 2)
+            text_y = max(22, y1 - 8)
+            cv2.rectangle(frame_vis, (x1, text_y - text_h - 8), (x1 + text_w + 10, text_y + 4), color, -1)
+            cv2.putText(frame_vis, text, (x1 + 5, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 2)
+        class_idx = RF_DETR_CLASS_TO_ID.get(name, rfdetr_class_index(int(label)))
+        detections.append(
+            {
+                "class": name,
+                "class_id": int(label),
+                "class_index": int(class_idx),
+                "confidence": float(score),
+                "bbox": [round(float(value), 1) for value in scaled_box],
+                "violation": is_violation(name),
+            }
+        )
+
+    if detections:
+        frame_vis = cv2.addWeighted(overlay, 0.35, frame_vis, 0.65, 0)
+    return frame_vis, detections
+
+
+def rfdetr_video_stream_frames(
+    source_path: Path,
+    confidence: float,
+    iou: float,
+    show_labels: bool = True,
+    show_conf: bool = True,
+):
+    cap = None
+    try:
+        yield mjpeg_chunk(status_frame("Dang tai RF-DETR Small...", "Video detection live se bat dau ngay khi model san sang."))
+        model = get_rfdetr_model()
+        visible_classes = display_class_set_for_demo("rfdetr")
+        cap = cv2.VideoCapture(str(source_path))
+        if not cap.isOpened():
+            yield mjpeg_chunk(status_frame("Khong mo duoc video dau vao.", source_path.name))
+            return
+
+        source_fps = float(cap.get(cv2.CAP_PROP_FPS) or 25)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 960)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 540)
+        frame_count = 0
+        displayed_total = 0
+        last_tick = time.perf_counter()
+
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                yield mjpeg_chunk(
+                    status_frame(
+                        "Da xu ly xong video.",
+                        f"Frames: {frame_count} | Detections: {displayed_total}",
+                        max(width, 960),
+                        max(height, 540),
+                    )
+                )
+                break
+
+            frame_count += 1
+            predictions, box_scale = rfdetr_predict_frame(model, frame)
+            frame_vis, displayed = draw_rfdetr_predictions_on_frame(
+                frame,
+                predictions,
+                confidence,
+                show_labels=show_labels,
+                show_conf=show_conf,
+                box_scale=box_scale,
+                display_classes=visible_classes,
+            )
+            displayed_total += len(displayed)
+            now = time.perf_counter()
+            live_fps = 1.0 / max(now - last_tick, 1e-6)
+            last_tick = now
+            vehicle_count = sum(1 for item in displayed if item["class"] in VEHICLE_CLASS_NAMES)
+
+            cv2.rectangle(frame_vis, (12, 12), (370, 112), (8, 13, 24), -1)
+            cv2.putText(frame_vis, "LIVE RF-DETR VIDEO", (28, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (216, 180, 254), 2)
+            cv2.putText(
+                frame_vis,
+                f"FPS {live_fps:.1f}/{source_fps:.1f} | Xe {vehicle_count} | Obj {len(displayed)}",
+                (28, 72),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (226, 232, 240),
+                1,
+            )
+            cv2.putText(frame_vis, f"Frame {frame_count}", (28, 98), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (148, 163, 184), 1)
+            yield mjpeg_chunk(frame_vis)
+    except GeneratorExit:
+        raise
+    except Exception as exc:
+        yield mjpeg_chunk(status_frame("Loi RF-DETR video live detection.", str(exc)[:100]))
+    finally:
+        if cap is not None:
+            cap.release()
+
+
+def redlight_stream_frames(source_path: Path, confidence: float, iou: float, model_key: str = "yolo", job_id: str | None = None):
     cap = None
     try:
         model_key = "rfdetr" if model_key == "rfdetr" else "yolo"
         model_name = "RF-DETR Small" if model_key == "rfdetr" else "YOLOv26s-seg"
+        update_redlight_job_metrics(job_id, stream_state="LOADING", stopline_state="STARTING")
         yield mjpeg_chunk(status_frame(f"Dang tai {model_name}...", "Live stream se bat dau ngay khi model san sang."))
         if model_key == "rfdetr":
             model = get_rfdetr_model()
@@ -2032,6 +2447,7 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float, mod
             static_model = get_yolo_model()
         cap = cv2.VideoCapture(str(source_path))
         if not cap.isOpened():
+            update_redlight_job_metrics(job_id, stream_state="ERROR", stopline_state="NO VIDEO")
             yield mjpeg_chunk(status_frame("Khong mo duoc video dau vao.", source_path.name))
             return
 
@@ -2055,10 +2471,21 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float, mod
         priority_tracks: set[int] = set()
         frame_count = 0
         raw_vehicle_detections = 0
+        last_frame_tick = time.perf_counter()
 
         while True:
             ok, frame = cap.read()
             if not ok:
+                update_redlight_job_metrics(
+                    job_id,
+                    stream_state="DONE",
+                    stopline_state="LOCKED" if calibrator.is_calibrated() else "NOT FOUND",
+                    frame=frame_count,
+                    vehicle_count=len(track_states),
+                    violations=len(violation_tracks),
+                    warnings=len(warning_tracks),
+                    priority=len(priority_tracks),
+                )
                 yield mjpeg_chunk(
                     status_frame(
                         "Da xu ly xong video.",
@@ -2071,6 +2498,7 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float, mod
 
             frame_count += 1
             static_confidence = max(0.12, confidence * 0.65)
+            stopline_confidence = REDLIGHT_STOPLINE_RFDETR_CONFIDENCE if model_key == "rfdetr" else REDLIGHT_STOPLINE_YOLO_CONFIDENCE
             rfdetr_predictions = None
             rfdetr_box_scale = 1.0
             if model_key == "rfdetr":
@@ -2092,6 +2520,16 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float, mod
                     static_kwargs["classes"] = static_classes
                 static_result = static_model.predict(frame, **static_kwargs)[0]
                 static_boxes, static_labels, static_confs = redlight_result_arrays(static_result)
+                stopline_result = static_result
+                if not calibrator.is_calibrated() and STOP_LINE_CLASS_NAME in YOLO_CLASS_TO_ID:
+                    stopline_result = static_model.predict(
+                        frame,
+                        conf=stopline_confidence,
+                        iou=iou,
+                        classes=[YOLO_CLASS_TO_ID[STOP_LINE_CLASS_NAME]],
+                        retina_masks=True,
+                        verbose=False,
+                    )[0]
 
             current_time = time.time()
             detected_light_state = traffic_light_state_from_labels(static_labels)
@@ -2104,10 +2542,12 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float, mod
                     rfdetr_predictions,
                     width,
                     height,
-                    static_confidence,
+                    stopline_confidence,
+                    rfdetr_box_scale,
                 )
             else:
-                line_info, stopline_mask = stopline_line_from_result(static_result, width, height)
+                line_info, stopline_mask = stopline_line_from_result(stopline_result, width, height)
+                line_info = expand_stopline_line_with_frame(frame, line_info)
             calibrator.update_line(line_info)
             calibrator.maybe_finish(width, height)
             line_segment, line, line_locked = calibrator.current(width, height)
@@ -2184,6 +2624,7 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float, mod
             else:
                 draw_text_badge(frame_vis, "SEARCHING STOP LINE", (24, 32), (0, 210, 255), 0.56, 2)
 
+            active_vehicle_count = int(len(vehicle_labels))
             if len(vehicle_labels) > 0:
                 raw_vehicle_detections += int(len(vehicle_labels))
                 for box, label, track_id, score in zip(vehicle_boxes, vehicle_labels, vehicle_track_ids, vehicle_confs):
@@ -2237,12 +2678,29 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float, mod
                 f"LIVE RED-LIGHT DETECTION ({model_name})",
                 f"Light: {light_status}",
                 f"Stop line: {'LOCKED' if line_locked else 'CALIBRATING' if line_segment is not None else 'SEARCHING'}",
-                f"Vehicles: {len(track_states)}",
+                f"Vehicles: {active_vehicle_count}",
                 f"Violations: {len(violation_tracks)}",
                 f"Warnings: {len(warning_tracks)}",
                 f"Priority: {len(priority_tracks)}",
                 f"Frame: {frame_count}",
             ]
+            now_tick = time.perf_counter()
+            live_fps = 1.0 / max(now_tick - last_frame_tick, 1e-6)
+            last_frame_tick = now_tick
+            stopline_state = "LOCKED" if line_locked else "CALIB" if line_segment is not None else "SEARCH"
+            update_redlight_job_metrics(
+                job_id,
+                fps=round(float(live_fps), 1),
+                vehicle_count=active_vehicle_count,
+                violations=len(violation_tracks),
+                warnings=len(warning_tracks),
+                priority=len(priority_tracks),
+                frame=frame_count,
+                light_state=light_status,
+                stopline_state=stopline_state,
+                stream_state=stopline_state,
+                source_fps=round(float(fps), 1),
+            )
             hud_overlay = frame_vis.copy()
             cv2.rectangle(hud_overlay, (12, 12), (410, 12 + len(hud) * 28), (8, 12, 22), -1)
             frame_vis = cv2.addWeighted(hud_overlay, 0.72, frame_vis, 0.28, 0)
@@ -2257,6 +2715,7 @@ def redlight_stream_frames(source_path: Path, confidence: float, iou: float, mod
                 cv2.putText(frame_vis, text, (24, 38 + idx * 28), cv2.FONT_HERSHEY_SIMPLEX, 0.68, color, 2, cv2.LINE_AA)
             yield mjpeg_chunk(frame_vis)
     except Exception as exc:
+        update_redlight_job_metrics(job_id, stream_state="ERROR", stopline_state="ERROR")
         yield mjpeg_chunk(status_frame("Loi live red-light stream.", str(exc)))
     finally:
         if cap is not None:
@@ -2530,6 +2989,144 @@ def cleanup_redlight_stream_jobs(max_age_seconds: int = 3600) -> None:
         _redlight_stream_jobs.pop(job_id, None)
 
 
+def cleanup_video_stream_jobs(max_age_seconds: int = 3600) -> None:
+    now = time.time()
+    stale_ids = [
+        job_id
+        for job_id, job in _video_stream_jobs.items()
+        if now - float(job.get("created_at", now)) > max_age_seconds
+    ]
+    for job_id in stale_ids:
+        _video_stream_jobs.pop(job_id, None)
+
+
+@app.post("/api/video/start")
+def api_video_start():
+    try:
+        cleanup_video_stream_jobs()
+        confidence = float(request.form.get("confidence", 0.5))
+        iou = float(request.form.get("iou", 0.5))
+        show_labels = parse_bool(request.form.get("show_labels"), True)
+        show_conf = parse_bool(request.form.get("show_conf"), True)
+        model_key = request.form.get("model", "yolo")
+        use_sample = request.form.get("use_sample") == "1"
+        status_snapshot = model_status()
+        if model_key not in {"yolo", "rfdetr"}:
+            return jsonify({"success": False, "error": "Model không hợp lệ cho Video detection.", "status": status_snapshot}), 400
+        if not status_snapshot[model_key]["available"]:
+            return jsonify({"success": False, "error": f"{status_snapshot[model_key]['name']} chưa sẵn sàng.", "status": status_snapshot}), 400
+
+        uploaded_file_metadata = None
+        if use_sample:
+            source_path = sample_source_path("video", request.form.get("sample_type"))
+        else:
+            file_storage = request.files.get("file")
+            if file_storage is None:
+                return jsonify({"success": False, "error": "Vui lòng upload video hoặc dùng video test_2.mp4.", "status": status_snapshot}), 400
+            uploaded_file_metadata = upload_debug(file_storage)
+            source_path = save_upload(file_storage)
+        if not is_video(source_path):
+            return jsonify({"success": False, "error": "Video detection cần input video.", "status": status_snapshot}), 400
+
+        job_id = uuid.uuid4().hex[:12]
+        _video_stream_jobs[job_id] = {
+            "source_path": source_path,
+            "confidence": confidence,
+            "iou": iou,
+            "show_labels": show_labels,
+            "show_conf": show_conf,
+            "model_key": model_key,
+            "created_at": time.time(),
+        }
+        stream_url = url_for("api_video_stream", job_id=job_id)
+        source_media = media_debug(source_path)
+        model_name = status_snapshot[model_key]["name"]
+        return jsonify(
+            {
+                "success": True,
+                "task": "video",
+                "job_id": job_id,
+                "model": f"{model_name} Video Live",
+                "model_key": model_key,
+                "media_type": "video",
+                "original_url": relative_static_url(source_path),
+                "stream_url": stream_url,
+                "metrics": {
+                    "fps": source_media.get("fps", 0),
+                    "vehicle_count": "Live",
+                    "violations": 0,
+                    "stream_state": "Live",
+                },
+                "status": status_snapshot,
+                "debug": {
+                    "request": {
+                        "model_key": model_key,
+                        "use_sample": use_sample,
+                        "sample_type": "video" if use_sample else None,
+                        "uploaded_file": uploaded_file_metadata,
+                        "source_media": source_media,
+                        "confidence": confidence,
+                        "iou": iou,
+                        "show_labels": show_labels,
+                        "show_conf": show_conf,
+                    },
+                    "stream": {
+                        "job_id": job_id,
+                        "url": stream_url,
+                        "display_classes": display_class_names_for_demo(model_key),
+                    },
+                },
+            }
+        )
+    except Exception as exc:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": str(exc),
+                    "status": model_status(),
+                    "debug": {
+                        "error": {
+                            "type": type(exc).__name__,
+                            "message": str(exc),
+                            "traceback": traceback.format_exception(type(exc), exc, exc.__traceback__),
+                        }
+                    },
+                }
+            ),
+            500,
+        )
+
+
+@app.get("/api/video/stream/<job_id>")
+def api_video_stream(job_id: str):
+    job = _video_stream_jobs.get(job_id)
+    if job is None:
+        return Response(mjpeg_chunk(status_frame("Khong tim thay live video job.", job_id)), mimetype="multipart/x-mixed-replace; boundary=frame")
+    model_key = str(job.get("model_key", "yolo"))
+    if model_key == "rfdetr":
+        frames = rfdetr_video_stream_frames(
+            job["source_path"],
+            float(job["confidence"]),
+            float(job["iou"]),
+            bool(job.get("show_labels", True)),
+            bool(job.get("show_conf", True)),
+        )
+    else:
+        frames = yolo_video_stream_frames(
+            job["source_path"],
+            float(job["confidence"]),
+            float(job["iou"]),
+            bool(job.get("show_labels", True)),
+            bool(job.get("show_conf", True)),
+        )
+    return Response(
+        frames,
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/api/redlight/start")
 def api_redlight_start():
     try:
@@ -2537,51 +3134,66 @@ def api_redlight_start():
         confidence = float(request.form.get("confidence", 0.5))
         iou = float(request.form.get("iou", 0.5))
         model_key = request.form.get("model", "yolo")
+        use_sample = request.form.get("use_sample") == "1"
         if model_key not in {"yolo", "rfdetr"}:
             return jsonify({"success": False, "error": "Model không hợp lệ cho tác vụ vượt đèn đỏ.", "status": model_status()}), 400
         status_snapshot = model_status()
         if not status_snapshot[model_key]["available"]:
             return jsonify({"success": False, "error": f"{status_snapshot[model_key]['name']} chưa sẵn sàng.", "status": status_snapshot}), 400
-        file_storage = request.files.get("file")
-        if file_storage is None:
-            return jsonify({"success": False, "error": "Vui lòng upload video cho tác vụ vượt đèn đỏ.", "status": status_snapshot}), 400
 
-        uploaded_file_metadata = upload_debug(file_storage)
-        source_path = save_upload(file_storage)
+        uploaded_file_metadata = None
+        if use_sample:
+            source_path = sample_source_path("redlight", request.form.get("sample_type"))
+        else:
+            file_storage = request.files.get("file")
+            if file_storage is None:
+                return jsonify({"success": False, "error": "Vui lòng upload video hoặc dùng video test_2.mp4.", "status": status_snapshot}), 400
+            uploaded_file_metadata = upload_debug(file_storage)
+            source_path = save_upload(file_storage)
         if not is_video(source_path):
             return jsonify({"success": False, "error": "Tác vụ vượt đèn đỏ cần input video.", "status": status_snapshot}), 400
 
         job_id = uuid.uuid4().hex[:12]
+        source_media = media_debug(source_path)
+        initial_metrics = redlight_initial_metrics(source_media)
         _redlight_stream_jobs[job_id] = {
             "source_path": source_path,
             "confidence": confidence,
             "iou": iou,
             "model_key": model_key,
             "created_at": time.time(),
+            "metrics": initial_metrics,
         }
         stream_url = url_for("api_redlight_stream", job_id=job_id)
+        metrics_url = url_for("api_redlight_metrics", job_id=job_id)
         model_name = status_snapshot[model_key]["name"]
         return jsonify(
             {
                 "success": True,
+                "task": "redlight",
                 "job_id": job_id,
                 "model": f"{model_name} Red Light Violation Live",
                 "model_key": model_key,
                 "media_type": "video",
                 "original_url": relative_static_url(source_path),
                 "stream_url": stream_url,
+                "metrics_url": metrics_url,
+                "metrics": initial_metrics,
                 "status": status_snapshot,
                 "debug": {
                     "request": {
                         "model_key": model_key,
+                        "use_sample": use_sample,
+                        "sample_type": "video" if use_sample else None,
                         "uploaded_file": uploaded_file_metadata,
-                        "source_media": media_debug(source_path),
+                        "source_media": source_media,
                         "confidence": confidence,
                         "iou": iou,
                     },
                     "stream": {
                         "job_id": job_id,
                         "url": stream_url,
+                        "metrics_url": metrics_url,
                         "model": model_name,
                     },
                 },
@@ -2618,10 +3230,19 @@ def api_redlight_stream(job_id: str):
             float(job["confidence"]),
             float(job["iou"]),
             str(job.get("model_key", "yolo")),
+            job_id,
         ),
         mimetype="multipart/x-mixed-replace; boundary=frame",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/api/redlight/metrics/<job_id>")
+def api_redlight_metrics(job_id: str):
+    job = _redlight_stream_jobs.get(job_id)
+    if job is None:
+        return jsonify({"success": False, "error": "Không tìm thấy live job."}), 404
+    return jsonify({"success": True, "job_id": job_id, "metrics": job.get("metrics") or redlight_initial_metrics()})
 
 
 @app.post("/api/infer")
@@ -2637,6 +3258,7 @@ def api_infer():
     show_labels = True
     show_conf = True
     use_sample = False
+    sample_type = None
 
     try:
         confidence = float(request.form.get("confidence", confidence))
@@ -2644,9 +3266,10 @@ def api_infer():
         show_labels = parse_bool(request.form.get("show_labels"), show_labels)
         show_conf = parse_bool(request.form.get("show_conf"), show_conf)
         use_sample = request.form.get("use_sample") == "1"
+        sample_type = request.form.get("sample_type")
 
         if use_sample:
-            source_path = SAMPLE_IMAGE_PATH
+            source_path = sample_source_path(task, sample_type)
         else:
             file_storage = request.files.get("file")
             if file_storage is None:
@@ -2655,7 +3278,7 @@ def api_infer():
                     jsonify(
                         {
                             "success": False,
-                            "error": "Vui lòng tải lên một ảnh hoặc chọn ảnh sample.",
+                            "error": "Vui lòng tải lên file hoặc dùng sample mặc định.",
                             "status": status_snapshot,
                             "debug": {
                                 "request": request_debug_payload(
@@ -2770,6 +3393,8 @@ def api_compare_sample():
         round(iou, 3),
         show_labels,
         show_conf,
+        "include_stopline",
+        STOP_LINE_QUALITATIVE_CONFIDENCE,
         RF_DETR_CLASS_ID_BASE,
         tuple(configured_display_class_names("yolo")),
         tuple(configured_display_class_names("rfdetr")),
@@ -2787,14 +3412,23 @@ def api_compare_sample():
     }
     for model_key in ("yolo", "rfdetr"):
         try:
-            payload["results"][model_key] = run_inference(
-                model_key,
-                SAMPLE_IMAGE_PATH,
-                confidence,
-                iou,
-                show_labels=show_labels,
-                show_conf=show_conf,
-            )
+            if model_key == "yolo":
+                payload["results"][model_key] = predict_yolo(
+                    SAMPLE_IMAGE_PATH,
+                    confidence,
+                    iou,
+                    show_labels=show_labels,
+                    show_conf=show_conf,
+                    include_stopline=True,
+                )
+            else:
+                payload["results"][model_key] = predict_rfdetr(
+                    SAMPLE_IMAGE_PATH,
+                    confidence,
+                    show_labels=show_labels,
+                    show_conf=show_conf,
+                    include_stopline=True,
+                )
         except Exception as exc:
             payload["errors"][model_key] = str(exc)
     _sample_compare_cache[cache_key] = payload

@@ -39,6 +39,7 @@ models/*
 *.onnx
 *.engine
 *.mp4
+!static/test_videos/test_2.mp4
 *.avi
 *.mov
 metrics.json
